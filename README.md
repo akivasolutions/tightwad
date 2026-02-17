@@ -297,35 +297,41 @@ proxy:
   max_draft_tokens: 32              # Sweet spot for cross-machine (reduces HTTP round trips)
   fallback_on_draft_failure: true
   draft:
-    url: http://192.168.1.50:11434   # Ollama on a cheap GPU
-    model_name: qwen3:8b
-    backend: ollama                     # or "llamacpp"
+    url: http://192.168.1.50:8081    # llama-server on a cheap GPU
+    model_name: qwen3-8b
+    backend: llamacpp                  # or "ollama"
   target:
-    url: http://192.168.1.100:11434    # Bigger GPU or cloud API
-    model_name: qwen3:32b
-    backend: ollama
+    url: http://192.168.1.100:8080   # Bigger GPU
+    model_name: qwen3-32b
+    backend: llamacpp
 
 # RPC cluster (optional, for tensor-parallel across machines)
+# Pool GPUs from multiple machines into a single model
 coordinator:
   host: 0.0.0.0
-  port: 8080
-  backend: hip
-  gpus:
-    - name: "7900 XTX #0"
-      vram_gb: 24
-    - name: "7900 XTX #1"
-      vram_gb: 24
+  port: 8090
+  backend: cuda          # "cuda" (NVIDIA) or "hip" (AMD/ROCm)
+  gpus:                  # Local GPUs on the coordinator machine
+    - name: "RTX 4070 Ti Super"
+      vram_gb: 16
+    - name: "RTX 3060"
+      vram_gb: 12
 
-workers:
-  - host: 192.168.1.100
+workers:                 # Remote machines running rpc-server
+  - host: 192.168.1.20   # Each worker exposes GPUs via rpc-server
     gpus:
-      - name: "RTX 4070 Ti Super"
-        vram_gb: 16
+      - name: "RTX 2070"
+        vram_gb: 8
+        rpc_port: 50052
+  - host: 192.168.1.30
+    gpus:
+      - name: "Apple M2 Metal"
+        vram_gb: 11       # Use recommendedMaxWorkingSetSize, not total unified memory
         rpc_port: 50052
 
 models:
-  qwen3-72b:
-    path: /models/Qwen3-72B-Q4_K_M.gguf
+  qwen3-32b:
+    path: /models/Qwen3-32B-Q4_K_M.gguf
     ctx_size: 8192
     flash_attn: true
     default: true
@@ -483,6 +489,8 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 | `tightwad proxy start` | Start speculative decoding proxy |
 | `tightwad proxy stop` | Stop the proxy |
 | `tightwad proxy status` | Show draft/target health + acceptance rate stats |
+| `tightwad chat` | Interactive chat via proxy (browser UI also at `http://localhost:8088`) |
+| `tightwad chat --direct` | Chat directly with target (bypass proxy, for A/B comparison) |
 | `tightwad status` | Show RPC cluster status |
 | `tightwad start [-m MODEL]` | Start RPC coordinator |
 | `tightwad stop` | Stop the coordinator |
@@ -495,34 +503,62 @@ Global option: `-c /path/to/cluster.yaml` or `TIGHTWAD_CONFIG` env var.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/` | GET | Browser-based chat UI |
 | `/v1/completions` | POST | Text completion (OpenAI-compatible) |
 | `/v1/chat/completions` | POST | Chat completion (OpenAI-compatible) |
 | `/v1/models` | GET | List available models |
 | `/v1/tightwad/status` | GET | Proxy stats: acceptance rate, rounds, throughput |
 
-All endpoints support `stream: true` for SSE streaming.
+All endpoints support `stream: true` for SSE streaming. The chat UI at `/` provides an instant browser-based interface with streaming — no additional software required.
 
 ## Hardware Setup
 
-### Worker (CUDA — Windows)
+### RPC Workers
 
+Each machine that contributes a GPU runs `rpc-server`. Download pre-built binaries from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) or build from source:
+
+**Windows (CUDA):**
 ```bash
-cmake -B build -DGGML_CUDA=ON -DGGML_RPC=ON
-cmake --build build --config Release
-build/bin/rpc-server.exe -p 50052  # GPU 0
+# Pre-built: download llama-b8079-bin-win-cuda-cu12.2.0-x64.zip
+# rpc-server.exe is included alongside llama-server.exe
+rpc-server.exe --host 0.0.0.0 --port 50052
 ```
 
-Or use `scripts/install-worker.sh`
-
-### Coordinator (ROCm — Ubuntu)
-
+**macOS (Metal):**
 ```bash
+# Pre-built: download llama-b8079-bin-macos-arm64.tar.gz
+# Restrict to Metal GPU only (avoids exposing CPU as second device):
+./rpc-server --host 0.0.0.0 --port 50052 --device MTL0
+```
+
+**Linux (ROCm/CUDA):**
+```bash
+# Build from source:
 cmake -B build -DGGML_HIP=ON -DGGML_RPC=ON -DAMDGPU_TARGETS=gfx1100
 cmake --build build --config Release -j$(nproc)
-sudo cp build/bin/llama-server /usr/local/bin/
+./build/bin/rpc-server --host 0.0.0.0 --port 50052
 ```
 
-Or use `scripts/install-coordinator.sh`
+**Important:** The coordinator's `llama-server` and all `rpc-server` instances **must be the same build version**. Version mismatches cause silent failures — no error, tensors just don't distribute.
+
+### Coordinator
+
+The coordinator runs `llama-server` with `--rpc` pointing to all workers:
+
+```bash
+llama-server -m model.gguf --host 0.0.0.0 --port 8090 -ngl 999 \
+  --rpc 192.168.1.20:50052,192.168.1.30:50052 \
+  --tensor-split 0.34,0.26,0.17,0.23 \
+  --flash-attn --jinja
+```
+
+### Firewall Notes
+
+`rpc-server` listens on port 50052 by default. You'll need to open this port:
+
+- **Windows:** `New-NetFirewallRule -DisplayName 'llama-rpc' -Direction Inbound -Program 'C:\llama\rpc-server.exe' -Action Allow`
+- **macOS:** Add `rpc-server` to System Settings → Network → Firewall → Options, or: `sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /path/to/rpc-server && sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /path/to/rpc-server`
+- **Linux:** `sudo ufw allow 50052/tcp`
 
 ## Development
 
