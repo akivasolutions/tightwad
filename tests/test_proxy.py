@@ -1,13 +1,15 @@
 """Tests for the speculative decoding proxy."""
 
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 from starlette.testclient import TestClient
 
 from tightwad.config import ProxyConfig, ServerEndpoint
-from tightwad.proxy import apply_chat_template, create_app
+from tightwad.proxy import SpeculativeProxy, apply_chat_template, create_app
+from tightwad.speculation import DraftToken
 
 
 @pytest.fixture
@@ -93,6 +95,124 @@ class TestProxyApp:
         })
         # Should get a 500 since target is also unreachable
         assert resp.status_code == 500
+
+
+class TestLogprobsVerification:
+    @pytest.fixture
+    def llamacpp_config(self):
+        return ProxyConfig(
+            draft=ServerEndpoint(url="http://draft:8081", model_name="qwen3-8b", backend="llamacpp"),
+            target=ServerEndpoint(url="http://target:8080", model_name="qwen3-72b", backend="llamacpp"),
+            host="0.0.0.0",
+            port=8088,
+            max_draft_tokens=4,
+        )
+
+    def test_can_use_logprobs_llamacpp(self, llamacpp_config):
+        proxy = SpeculativeProxy(llamacpp_config)
+        assert proxy._can_use_logprobs() is True
+
+    def test_cannot_use_logprobs_ollama(self):
+        config = ProxyConfig(
+            draft=ServerEndpoint(url="http://draft:11434", model_name="qwen3-8b", backend="ollama"),
+            target=ServerEndpoint(url="http://target:11434", model_name="qwen3-32b", backend="ollama"),
+        )
+        proxy = SpeculativeProxy(config)
+        assert proxy._can_use_logprobs() is False
+
+    def test_cannot_use_logprobs_mixed(self):
+        config = ProxyConfig(
+            draft=ServerEndpoint(url="http://draft:11434", model_name="qwen3-8b", backend="ollama"),
+            target=ServerEndpoint(url="http://target:8080", model_name="qwen3-72b", backend="llamacpp"),
+        )
+        proxy = SpeculativeProxy(config)
+        assert proxy._can_use_logprobs() is False
+
+    @pytest.mark.asyncio
+    async def test_verify_with_logprobs_all_accepted(self, llamacpp_config):
+        """When target agrees with all draft tokens, get accepted + bonus."""
+        proxy = SpeculativeProxy(llamacpp_config)
+
+        draft_tokens = [
+            DraftToken(token_id=100, logprob=-0.1, text="The"),
+            DraftToken(token_id=200, logprob=-0.2, text=" answer"),
+            DraftToken(token_id=300, logprob=-0.15, text=" is"),
+        ]
+
+        # Mock target response: echo=true returns logprobs for all tokens
+        # Simulate: 5 prompt tokens + 3 draft tokens + 1 bonus = 9 content entries
+        mock_content = [
+            # 5 prompt token entries (we don't care about these)
+            {"id": 1, "token": "<|im", "logprob": -0.01},
+            {"id": 2, "token": "_start", "logprob": -0.01},
+            {"id": 3, "token": "|>", "logprob": -0.01},
+            {"id": 4, "token": "system", "logprob": -0.01},
+            {"id": 5, "token": "\n", "logprob": -0.01},
+            # 3 draft token positions — target agrees (same token_id)
+            {"id": 100, "token": "The", "logprob": -0.05},
+            {"id": 200, "token": " answer", "logprob": -0.1},
+            {"id": 300, "token": " is", "logprob": -0.08},
+            # 1 bonus token
+            {"id": 400, "token": " 42", "logprob": -0.3},
+        ]
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"logprobs": {"content": mock_content}}]
+        }
+
+        proxy.target_client.post = AsyncMock(return_value=mock_resp)
+
+        result = await proxy.verify_with_logprobs("prompt text", draft_tokens, temperature=0.0)
+
+        assert result.accepted_count == 3
+        assert result.rejected_at is None
+        assert result.bonus_token is not None
+        assert result.bonus_token.token_id == 400
+
+        await proxy.close()
+
+    @pytest.mark.asyncio
+    async def test_verify_with_logprobs_partial_accept(self, llamacpp_config):
+        """When target disagrees at position 2, accept first 2 and resample."""
+        proxy = SpeculativeProxy(llamacpp_config)
+
+        draft_tokens = [
+            DraftToken(token_id=100, logprob=-0.1, text="The"),
+            DraftToken(token_id=200, logprob=-0.2, text=" answer"),
+            DraftToken(token_id=300, logprob=-0.15, text=" is"),
+        ]
+
+        mock_content = [
+            # 5 prompt tokens
+            {"id": 1, "token": "a", "logprob": -0.01},
+            {"id": 2, "token": "b", "logprob": -0.01},
+            {"id": 3, "token": "c", "logprob": -0.01},
+            {"id": 4, "token": "d", "logprob": -0.01},
+            {"id": 5, "token": "e", "logprob": -0.01},
+            # Draft positions: agree, agree, DISAGREE
+            {"id": 100, "token": "The", "logprob": -0.05},
+            {"id": 200, "token": " answer", "logprob": -0.1},
+            {"id": 999, "token": " was", "logprob": -0.08},  # target says 999, draft says 300
+            # Bonus
+            {"id": 400, "token": " 42", "logprob": -0.3},
+        ]
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"logprobs": {"content": mock_content}}]
+        }
+
+        proxy.target_client.post = AsyncMock(return_value=mock_resp)
+
+        result = await proxy.verify_with_logprobs("prompt", draft_tokens, temperature=0.0)
+
+        assert result.accepted_count == 2
+        assert result.rejected_at == 2
+        assert result.resample_token is not None
+        assert result.resample_token.token_id == 999
+
+        await proxy.close()
 
 
 class TestSSEFormat:

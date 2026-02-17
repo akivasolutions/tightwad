@@ -147,25 +147,46 @@ The output is **provably identical** to running the large model alone — the sm
 
 ### Benchmark Results
 
-Tested with Qwen3-8B (RTX 2070, Ollama) drafting for Qwen3-32B (RTX 4070 Ti Super, Ollama) across 5 prompt types:
+#### Same-Family (Qwen3-8B → Qwen3-32B, local Ollama)
+
+Draft on RTX 2070 (8GB), target on RTX 4070 Ti Super (16GB), both running Qwen3 via Ollama:
 
 | Prompt Type | Acceptance Rate | Rounds | Notes |
 |-------------|:--------------:|:------:|-------|
-| Reasoning   | **88%**        | 32     | Highest — deterministic math answers |
-| Code        | **73%**        | 34     | High — structured syntax overlap |
-| Factual     | 52%            | 18     | Moderate agreement |
-| List        | 44%            | 40     | Varied phrasing causes divergence |
-| Creative    | 34%            | 6      | Lowest — many valid outputs |
-| **Average** | **58.3%**      | 26     | |
+| Reasoning   | **89%**        | 32     | Highest — deterministic math answers |
+| Code        | **76%**        | 34     | High — structured syntax overlap |
+| Factual     | 73%            | 16     | Strong agreement on facts |
+| List        | 42%            | 40     | Varied phrasing causes divergence |
+| Creative    | 39%            | 6      | Lowest — many valid outputs |
+| **Average** | **63.8%**      | 25.6   | |
+
+#### Same-Family via Cloud API (Qwen3-8B → Qwen3.5-397B, OpenRouter)
+
+Draft on local RTX 2070, target on Qwen3.5-397B MoE via OpenRouter API:
+
+| Prompt Type | Acceptance Rate | Notes |
+|-------------|:--------------:|-------|
+| Code        | **39%**        | Structured syntax helps despite 50x size gap |
+| Factual     | 28%            | Moderate agreement |
+| Creative    | 1%             | Extreme divergence at different scales |
+| **Average** | **~23%**       | Lower due to cross-backend formatting differences |
+
+#### Cross-Family (Qwen3-8B → Llama 3.3 70B, OpenRouter)
+
+| **Average** | **~3%** | Nearly zero — different tokenizers and training data |
+
+**Key finding:** Same-family drafting is critical. An 8B model from the same family as the target achieves 64% acceptance, while cross-family drops to ~3%.
 
 > **Current status:** Text-match verification proves acceptance rates but doesn't yet achieve wall-clock speedup (both models generate autoregressively). Logprobs-based batch verification — where the target scores all draft tokens in one forward pass — is the next milestone that will convert these rates into real 2-3x throughput gains.
 
-Run the benchmark yourself: `python scripts/benchmark_proxy.py`
+Run the benchmark yourself: `OPENROUTER_API_KEY=... python scripts/benchmark_proxy.py`
 
 ### Use Cases
 
 - **Local multi-GPU:** Draft on a consumer GPU ($200), verify on a larger GPU/rig
 - **Cloud cost reduction:** Draft locally, verify via cloud API — fewer API calls for the same output quality
+- **CPU draft, GPU verify:** Run a tiny model (0.6B-1.7B) on CPU/RAM, verify on GPU. Turns every idle CPU in a datacenter into usable inference compute
+- **Legacy GPU revival:** A 12-year-old GPU with 2GB VRAM can run Qwen3-1.7B as a draft model for a 72B target — turning e-waste into productive infrastructure
 - **Edge + datacenter:** Fast local responses with datacenter-grade accuracy
 
 ## CLI Reference

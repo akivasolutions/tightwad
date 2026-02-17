@@ -188,18 +188,108 @@ class SpeculativeProxy:
             resp.raise_for_status()
             return resp.json()["choices"][0].get("text", "")
 
-    async def verify_and_accept(
+    async def verify_with_logprobs(
+        self, prompt: str, draft_tokens: list[DraftToken], temperature: float = 0.0
+    ) -> VerificationResult:
+        """Verify draft tokens via logprobs batch verification (llama-server).
+
+        Sends prompt + draft text to target with echo=true, logprobs=1.
+        The target scores ALL draft tokens in a single forward pass.
+        Returns VerificationResult with accepted/rejected tokens.
+        """
+        draft_text = "".join(t.text for t in draft_tokens)
+        full_prompt = prompt + draft_text
+
+        # Single forward pass: target evaluates prompt+draft and returns logprobs
+        # max_tokens=1 gives us the bonus token; echo=true gives logprobs for draft positions
+        body: dict = {
+            "prompt": full_prompt,
+            "max_tokens": 1,
+            "temperature": temperature,
+            "logprobs": 1,
+            "echo": True,
+            "stream": False,
+        }
+        resp = await self.target_client.post("/v1/completions", json=body)
+        resp.raise_for_status()
+        data = resp.json()
+
+        choice = data["choices"][0]
+        logprobs_data = choice.get("logprobs", {})
+        content = logprobs_data.get("content", [])
+
+        if not content:
+            # No logprobs returned — fall back to text-match
+            logger.warning("Logprobs fallback: insufficient data from target")
+            return VerificationResult(
+                accepted_tokens=[], bonus_token=None, accepted_count=0, rejected_at=0,
+                resample_token=DraftToken(token_id=0, logprob=0.0, text=""),
+            )
+
+        # The echo response includes logprobs for ALL tokens (prompt + draft + bonus).
+        # We need the logprobs at the positions corresponding to draft tokens.
+        # With echo=true, content has entries for every token in prompt+draft+bonus.
+        # The draft tokens are the last len(draft_tokens)+1 entries
+        # (draft tokens + 1 bonus from max_tokens=1).
+
+        # Build target logprobs for each draft position
+        # The draft tokens start at position (total - len(draft_tokens) - 1)
+        # because the last entry is the bonus token
+        n_draft = len(draft_tokens)
+        n_content = len(content)
+
+        if n_content < n_draft + 1:
+            # Not enough logprob entries — fall back
+            logger.warning("Logprobs fallback: insufficient data from target")
+            return VerificationResult(
+                accepted_tokens=[], bonus_token=None, accepted_count=0, rejected_at=0,
+                resample_token=DraftToken(token_id=0, logprob=0.0, text=""),
+            )
+
+        # Draft positions are the last (n_draft + 1) entries:
+        # entries[-n_draft-1:-1] are draft token positions
+        # entries[-1] is the bonus token position
+        draft_start = n_content - n_draft - 1
+        target_logprobs: list[TargetLogprob] = []
+
+        for i in range(n_draft):
+            entry = content[draft_start + i]
+            top_token_id = entry.get("id", 0)
+            top_logprob = entry.get("logprob", -100.0)
+
+            # Check if draft token appears in top_logprobs
+            draft_token_lp = None
+            if draft_tokens[i].token_id == top_token_id:
+                draft_token_lp = top_logprob
+            else:
+                # Check top_logprobs list for draft token
+                for alt in entry.get("top_logprobs", []):
+                    if alt.get("id") == draft_tokens[i].token_id:
+                        draft_token_lp = alt.get("logprob")
+                        break
+
+            target_logprobs.append(TargetLogprob(
+                token_id=top_token_id,
+                logprob=top_logprob,
+                draft_token_logprob=draft_token_lp,
+            ))
+
+        # Bonus token from the last entry (the one new token generated)
+        bonus_entry = content[-1]
+        target_logprobs.append(TargetLogprob(
+            token_id=bonus_entry.get("id", 0),
+            logprob=bonus_entry.get("logprob", -100.0),
+        ))
+
+        return verify_draft_tokens(draft_tokens, target_logprobs, temperature)
+
+    async def verify_text_match(
         self, prompt: str, draft_text: str, temperature: float = 0.0
     ) -> tuple[str, int, int]:
-        """Verify draft text against target model.
+        """Fallback: text-match verification for backends without logprobs.
 
-        Uses text-match greedy verification: target generates from the same
-        prompt, and we find the longest matching prefix.
-
-        Returns (accepted_text, n_accepted_chars, n_draft_chars).
+        Returns (target_text, n_accepted_chars, n_draft_chars).
         """
-        n_draft_chars = len(draft_text)
-
         target_text = await self._generate_target(
             prompt, self.config.max_draft_tokens, temperature
         )
@@ -212,16 +302,16 @@ class SpeculativeProxy:
             else:
                 break
 
-        # Accept the matching prefix + target's continuation from divergence point
-        if match_len == len(draft_text) and match_len == len(target_text):
-            # Perfect match
-            return target_text, match_len, n_draft_chars
-        elif match_len == len(draft_text):
-            # Draft is a prefix of target — accept all draft + target's extra
-            return target_text, match_len, n_draft_chars
-        else:
-            # Divergence — accept common prefix + target from that point
-            return target_text, match_len, n_draft_chars
+        return target_text, match_len, len(draft_text)
+
+    def _can_use_logprobs(self) -> bool:
+        """Check if we can use logprobs-based batch verification."""
+        # Need llamacpp target (supports echo + logprobs)
+        # Draft must also provide per-token logprobs (llamacpp, not ollama)
+        return (
+            self.config.target.backend == "llamacpp"
+            and self.config.draft.backend == "llamacpp"
+        )
 
     async def speculation_round(
         self, prompt: str, temperature: float = 0.0
@@ -251,24 +341,47 @@ class SpeculativeProxy:
         if not draft_text:
             return "", True
 
-        # Verify phase — text-match greedy
-        accepted_text, match_len, draft_len = await self.verify_and_accept(
-            prompt, draft_text, temperature
-        )
+        # Verify phase
+        if self._can_use_logprobs():
+            # Logprobs batch verification — single forward pass on target
+            result = await self.verify_with_logprobs(prompt, draft, temperature)
+            accepted_text = "".join(t.text for t in result.accepted_tokens)
+            if result.resample_token and result.resample_token.text:
+                accepted_text += result.resample_token.text
+            elif result.bonus_token and result.bonus_token.text:
+                accepted_text += result.bonus_token.text
 
-        # Update stats
-        self.stats.total_rounds += 1
-        self.stats.total_drafted += draft_len
-        self.stats.total_accepted += match_len
-        self.stats.total_tokens_output += len(accepted_text)
+            n_accepted = result.accepted_count
+            n_drafted = len(draft)
 
-        if match_len < draft_len:
-            self.stats.total_resampled += 1
-        elif len(accepted_text) > draft_len:
-            self.stats.total_bonus += 1
+            self.stats.total_rounds += 1
+            self.stats.total_drafted += n_drafted
+            self.stats.total_accepted += n_accepted
+            self.stats.total_tokens_output += result.total_tokens
 
-        is_done = len(accepted_text) == 0
-        return accepted_text, is_done
+            if result.rejected_at is not None:
+                self.stats.total_resampled += 1
+            elif result.bonus_token is not None:
+                self.stats.total_bonus += 1
+
+            is_done = not accepted_text
+            return accepted_text, is_done
+        else:
+            # Text-match fallback (Ollama or mixed backends)
+            target_text, match_len, draft_len = await self.verify_text_match(
+                prompt, draft_text, temperature
+            )
+
+            self.stats.total_rounds += 1
+            self.stats.total_drafted += draft_len
+            self.stats.total_accepted += match_len
+            self.stats.total_tokens_output += len(target_text)
+
+            if match_len < draft_len:
+                self.stats.total_resampled += 1
+
+            is_done = len(target_text) == 0
+            return target_text, is_done
 
     async def _fallback_generate(
         self, prompt: str, n: int, temperature: float
