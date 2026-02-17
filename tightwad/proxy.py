@@ -193,21 +193,21 @@ class SpeculativeProxy:
     ) -> VerificationResult:
         """Verify draft tokens via logprobs batch verification (llama-server).
 
-        Sends prompt + draft text to target with echo=true, logprobs=1.
-        The target scores ALL draft tokens in a single forward pass.
+        Sends the same prompt to the target, generates N+1 tokens with logprobs.
+        Compares target's token IDs against draft token IDs at each position.
+        KV cache (cache_prompt=true, default) means the prompt is only processed
+        once — subsequent rounds only evaluate new tokens.
+
         Returns VerificationResult with accepted/rejected tokens.
         """
-        draft_text = "".join(t.text for t in draft_tokens)
-        full_prompt = prompt + draft_text
+        n_draft = len(draft_tokens)
 
-        # Single forward pass: target evaluates prompt+draft and returns logprobs
-        # max_tokens=1 gives us the bonus token; echo=true gives logprobs for draft positions
+        # Target generates same number of tokens + 1 bonus, with logprobs
         body: dict = {
-            "prompt": full_prompt,
-            "max_tokens": 1,
+            "prompt": prompt,
+            "max_tokens": n_draft + 1,
             "temperature": temperature,
-            "logprobs": 1,
-            "echo": True,
+            "logprobs": True,
             "stream": False,
         }
         resp = await self.target_client.post("/v1/completions", json=body)
@@ -219,69 +219,51 @@ class SpeculativeProxy:
         content = logprobs_data.get("content", [])
 
         if not content:
-            # No logprobs returned — fall back to text-match
-            logger.warning("Logprobs fallback: insufficient data from target")
+            logger.warning("Logprobs fallback: no logprob data from target")
             return VerificationResult(
                 accepted_tokens=[], bonus_token=None, accepted_count=0, rejected_at=0,
                 resample_token=DraftToken(token_id=0, logprob=0.0, text=""),
             )
 
-        # The echo response includes logprobs for ALL tokens (prompt + draft + bonus).
-        # We need the logprobs at the positions corresponding to draft tokens.
-        # With echo=true, content has entries for every token in prompt+draft+bonus.
-        # The draft tokens are the last len(draft_tokens)+1 entries
-        # (draft tokens + 1 bonus from max_tokens=1).
-
-        # Build target logprobs for each draft position
-        # The draft tokens start at position (total - len(draft_tokens) - 1)
-        # because the last entry is the bonus token
-        n_draft = len(draft_tokens)
-        n_content = len(content)
-
-        if n_content < n_draft + 1:
-            # Not enough logprob entries — fall back
-            logger.warning("Logprobs fallback: insufficient data from target")
-            return VerificationResult(
-                accepted_tokens=[], bonus_token=None, accepted_count=0, rejected_at=0,
-                resample_token=DraftToken(token_id=0, logprob=0.0, text=""),
-            )
-
-        # Draft positions are the last (n_draft + 1) entries:
-        # entries[-n_draft-1:-1] are draft token positions
-        # entries[-1] is the bonus token position
-        draft_start = n_content - n_draft - 1
+        # Build target logprobs — one per draft position + bonus
         target_logprobs: list[TargetLogprob] = []
-
-        for i in range(n_draft):
-            entry = content[draft_start + i]
+        for i, entry in enumerate(content):
             top_token_id = entry.get("id", 0)
             top_logprob = entry.get("logprob", -100.0)
+            top_token_text = entry.get("token", "")
 
-            # Check if draft token appears in top_logprobs
+            # For draft positions, check if draft token matches or appears in top_logprobs
             draft_token_lp = None
-            if draft_tokens[i].token_id == top_token_id:
-                draft_token_lp = top_logprob
-            else:
-                # Check top_logprobs list for draft token
-                for alt in entry.get("top_logprobs", []):
-                    if alt.get("id") == draft_tokens[i].token_id:
-                        draft_token_lp = alt.get("logprob")
-                        break
+            if i < n_draft:
+                if draft_tokens[i].token_id == top_token_id:
+                    draft_token_lp = top_logprob
+                else:
+                    for alt in entry.get("top_logprobs", []):
+                        if alt.get("id") == draft_tokens[i].token_id:
+                            draft_token_lp = alt.get("logprob")
+                            break
 
             target_logprobs.append(TargetLogprob(
                 token_id=top_token_id,
                 logprob=top_logprob,
                 draft_token_logprob=draft_token_lp,
             ))
+            # Attach text to target tokens for output assembly
+            target_logprobs[-1]._text = top_token_text  # type: ignore[attr-defined]
 
-        # Bonus token from the last entry (the one new token generated)
-        bonus_entry = content[-1]
-        target_logprobs.append(TargetLogprob(
-            token_id=bonus_entry.get("id", 0),
-            logprob=bonus_entry.get("logprob", -100.0),
-        ))
+        result = verify_draft_tokens(draft_tokens, target_logprobs, temperature)
 
-        return verify_draft_tokens(draft_tokens, target_logprobs, temperature)
+        # Attach text to resample/bonus tokens from target output
+        if result.resample_token is not None and result.rejected_at is not None:
+            idx = result.rejected_at
+            if idx < len(target_logprobs):
+                result.resample_token.text = getattr(target_logprobs[idx], '_text', '')
+        if result.bonus_token is not None:
+            idx = n_draft
+            if idx < len(target_logprobs):
+                result.bonus_token.text = getattr(target_logprobs[idx], '_text', '')
+
+        return result
 
     async def verify_text_match(
         self, prompt: str, draft_text: str, temperature: float = 0.0
@@ -306,8 +288,9 @@ class SpeculativeProxy:
 
     def _can_use_logprobs(self) -> bool:
         """Check if we can use logprobs-based batch verification."""
-        # Need llamacpp target (supports echo + logprobs)
-        # Draft must also provide per-token logprobs (llamacpp, not ollama)
+        # Need llamacpp for both: draft must provide per-token IDs,
+        # target must support logprobs in /v1/completions.
+        # Ollama returns text blobs without token IDs, so text-match is used.
         return (
             self.config.target.backend == "llamacpp"
             and self.config.draft.backend == "llamacpp"

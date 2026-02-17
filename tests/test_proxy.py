@@ -139,21 +139,12 @@ class TestLogprobsVerification:
             DraftToken(token_id=300, logprob=-0.15, text=" is"),
         ]
 
-        # Mock target response: echo=true returns logprobs for all tokens
-        # Simulate: 5 prompt tokens + 3 draft tokens + 1 bonus = 9 content entries
+        # Target generates 4 tokens (3 draft + 1 bonus), all match draft
         mock_content = [
-            # 5 prompt token entries (we don't care about these)
-            {"id": 1, "token": "<|im", "logprob": -0.01},
-            {"id": 2, "token": "_start", "logprob": -0.01},
-            {"id": 3, "token": "|>", "logprob": -0.01},
-            {"id": 4, "token": "system", "logprob": -0.01},
-            {"id": 5, "token": "\n", "logprob": -0.01},
-            # 3 draft token positions — target agrees (same token_id)
             {"id": 100, "token": "The", "logprob": -0.05},
             {"id": 200, "token": " answer", "logprob": -0.1},
             {"id": 300, "token": " is", "logprob": -0.08},
-            # 1 bonus token
-            {"id": 400, "token": " 42", "logprob": -0.3},
+            {"id": 400, "token": " 42", "logprob": -0.3},  # bonus
         ]
 
         mock_resp = MagicMock()
@@ -183,19 +174,12 @@ class TestLogprobsVerification:
             DraftToken(token_id=300, logprob=-0.15, text=" is"),
         ]
 
+        # Target agrees on first 2, disagrees at position 2
         mock_content = [
-            # 5 prompt tokens
-            {"id": 1, "token": "a", "logprob": -0.01},
-            {"id": 2, "token": "b", "logprob": -0.01},
-            {"id": 3, "token": "c", "logprob": -0.01},
-            {"id": 4, "token": "d", "logprob": -0.01},
-            {"id": 5, "token": "e", "logprob": -0.01},
-            # Draft positions: agree, agree, DISAGREE
             {"id": 100, "token": "The", "logprob": -0.05},
             {"id": 200, "token": " answer", "logprob": -0.1},
-            {"id": 999, "token": " was", "logprob": -0.08},  # target says 999, draft says 300
-            # Bonus
-            {"id": 400, "token": " 42", "logprob": -0.3},
+            {"id": 999, "token": " was", "logprob": -0.08},  # disagree
+            {"id": 400, "token": " 42", "logprob": -0.3},  # bonus (unused)
         ]
 
         mock_resp = MagicMock()
@@ -211,6 +195,7 @@ class TestLogprobsVerification:
         assert result.rejected_at == 2
         assert result.resample_token is not None
         assert result.resample_token.token_id == 999
+        assert result.resample_token.text == " was"
 
         await proxy.close()
 
