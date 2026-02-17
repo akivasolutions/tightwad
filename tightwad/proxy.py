@@ -114,7 +114,8 @@ class SpeculativeProxy:
             resp = await client.post(url, json=body)
         resp.raise_for_status()
         data = resp.json()
-        text = data.get("response", "")
+        # Qwen3 thinking mode puts output in "thinking" when "response" is empty
+        text = data.get("response", "") or data.get("thinking", "")
         if not text:
             return []
         # Ollama doesn't return per-token info, so we treat the whole
@@ -173,7 +174,9 @@ class SpeculativeProxy:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await client.post(url, json=body)
             resp.raise_for_status()
-            return resp.json().get("response", "")
+            data = resp.json()
+            # Qwen3 thinking mode puts output in "thinking" when "response" is empty
+            return data.get("response", "") or data.get("thinking", "")
         else:
             body: dict = {
                 "prompt": prompt,

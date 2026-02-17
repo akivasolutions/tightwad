@@ -143,7 +143,24 @@ The proxy supports two backend types for draft and target servers:
 3. **Accept/reject:** Keep tokens where both models agree, take the large model's token at the first disagreement
 4. **Repeat** until done
 
-The output is **provably identical** to running the large model alone — the small model just proposes shortcuts. Same-family model pairs (Qwen3-8B → Qwen3-72B) achieve 60-80% acceptance rates, meaning ~5-7 tokens per verification round instead of 1.
+The output is **provably identical** to running the large model alone — the small model just proposes shortcuts.
+
+### Benchmark Results
+
+Tested with Qwen3-8B (RTX 2070, Ollama) drafting for Qwen3-32B (RTX 4070 Ti Super, Ollama) across 5 prompt types:
+
+| Prompt Type | Acceptance Rate | Rounds | Notes |
+|-------------|:--------------:|:------:|-------|
+| Reasoning   | **88%**        | 32     | Highest — deterministic math answers |
+| Code        | **73%**        | 34     | High — structured syntax overlap |
+| Factual     | 52%            | 18     | Moderate agreement |
+| List        | 44%            | 40     | Varied phrasing causes divergence |
+| Creative    | 34%            | 6      | Lowest — many valid outputs |
+| **Average** | **58.3%**      | 26     | |
+
+> **Current status:** Text-match verification proves acceptance rates but doesn't yet achieve wall-clock speedup (both models generate autoregressively). Logprobs-based batch verification — where the target scores all draft tokens in one forward pass — is the next milestone that will convert these rates into real 2-3x throughput gains.
+
+Run the benchmark yourself: `python scripts/benchmark_proxy.py`
 
 ### Use Cases
 
