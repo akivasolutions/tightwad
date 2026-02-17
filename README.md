@@ -55,17 +55,38 @@ YOUR HARDWARE (any mix works)                         TIGHTWAD
 
 The small model is like autocomplete on your phone — it suggests, the big model accepts or corrects. You only ever see the final, verified output.
 
-## Two Modes
+## Three Modes
 
-### 1. RPC Cluster — Pool GPUs into one endpoint
+### 1. Speculative Decoding Proxy — Draft + Verify across machines
 
-Combine GPUs from different machines and vendors into a single OpenAI-compatible API. The coordinator distributes model layers across local and remote GPUs.
+A fast small model (e.g., 1.7B on any CPU or cheap GPU) drafts candidate tokens, a large model (e.g., 32B-72B) verifies them in batch. Output quality is **equivalent to running the large model alone**, but up to 2x faster because batch verification is much cheaper than autoregressive generation. Network traffic: **bytes** (token IDs only).
+
+### 2. RPC Cluster — Pool GPUs into one endpoint
+
+Combine GPUs from different machines and vendors into a single OpenAI-compatible API. The coordinator distributes model layers across local and remote GPUs. Use this when a model doesn't fit on any single machine.
 
 > **Note:** The coordinator machine needs enough **system RAM** for the full model file (not just its GPU share). llama.cpp mmaps the entire GGUF before distributing tensors to workers. A 70B Q4_K_M (~40GB) needs ~44GB RAM on the coordinator.
 
-### 2. Speculative Decoding Proxy — Draft + Verify across machines
+### 3. Combined Mode — Speculation Over a Pool (the killer feature)
 
-A fast small model (e.g., 8B on a consumer GPU) drafts candidate tokens, a large model (e.g., 72B on a server or cloud API) verifies them in batch. Output quality is **equivalent to running the large model alone**, but up to 2-3x faster because batch verification is much cheaper than autoregressive generation.
+**When a model doesn't fit on one machine, pool the GPUs AND speculate on top.** The RPC pool is slow autoregressive (3 tok/s over WiFi), but batch verification amortizes the RPC overhead — 32 tokens per round instead of 1 token per round-trip. Result: **1.8x speedup** over pool-only, making models that don't fit on one machine actually usable.
+
+```
+ANY junk hardware (P400 2GB, GTX 770, laptop CPU, Raspberry Pi)
+    │ runs Qwen3-1.7B, drafts 32 tokens (~30 tok/s)
+    │ sends token IDs (bytes, not megabytes)
+    ▼
+Tightwad Proxy (:8088)
+    │ sends draft to pool for BATCH verification
+    ▼
+RPC GPU Pool (any mix: CUDA + ROCm + Metal, running 70B)
+    │ verifies 32 tokens in ONE forward pass
+    │ 1 RPC round-trip for 32 tokens instead of 32 round-trips
+    ▼
+5+ tok/s instead of 3 tok/s — and the 70B model fits nowhere else
+```
+
+> The draft model needs: (1) same model family as the target, (2) llamacpp backend (not Ollama) for prompt-append verification, (3) any hardware that can run a 1.7B model. That's it.
 
 ```
 Client (OpenAI API)
@@ -420,16 +441,54 @@ Same-family (Qwen3-8B → Qwen3-32B, local Ollama):
 | M4 Mac CPU (llama-server) | 32.8 tok/s | 68% | 0.80x |
 | Unraid CPU (Ollama, text-match) | 14.9 tok/s | 68% | 0.14x |
 
-CPU drafting with a 1.7B model works but doesn't achieve speedup at `max_draft_tokens=8` due to HTTP round-trip overhead. Needs testing with higher draft token counts and/or multi-drafter parallelism.
+CPU drafting with a 1.7B model works but doesn't achieve speedup at `max_draft_tokens=8` due to HTTP round-trip overhead. At `max_draft_tokens=32`, CPU drafting achieves significant speedup (see Combined Mode below).
+
+#### Combined Mode: Speculation Over RPC Pool
+
+**The killer feature.** When a model is too large for any single machine, pool GPUs via RPC and use speculative decoding to overcome RPC's per-token latency. The draft model runs on any junk hardware (CPU, 2GB GPU) and the pooled target verifies 32 tokens per batch instead of generating one at a time.
+
+Setup: Qwen3-1.7B (M4 CPU, llamacpp draft) → Qwen3-32B (4-GPU RPC pool: 4070+3060+2070+M2)
+
+| Mode | Speed | Notes |
+|------|:-----:|-------|
+| RPC pool direct (autoregressive) | 3.0 tok/s | Each token = full RPC round-trip to all workers |
+| **RPC pool + speculation** | **5.4 tok/s** | 32 tokens verified per batch, 100% acceptance |
+| **Speedup** | **1.8x** | |
+
+```
+Why this works:
+
+  Pool autoregressive: 1 token → full RPC round-trip → 1 token → full RPC round-trip → ...
+                       3.0 tok/s (network latency per token)
+
+  Pool + speculation:  Draft 32 tokens (CPU, fast, no network)
+                       → Verify 32 tokens in ONE batch (one RPC round-trip for 32 tokens)
+                       → 5.4 tok/s (network latency amortized over 32 tokens)
+```
+
+**This means any model that fits across your pooled GPUs is usable — even over WiFi.** The draft model can run on literally anything: a P400 (2GB), a GTX 770 (2GB), a laptop CPU, a Raspberry Pi. It just needs to run a 1.7B model from the same family as the target.
+
+#### RPC Pool Without Speculation (for comparison)
+
+Don't do this over WiFi. RPC tensor-parallelism ships 100-300 MB per inference step.
+
+| Setup | Speed |
+|-------|:-----:|
+| Desktop local only (4070+3060, 32B) | 17.0 tok/s |
+| 4-GPU RPC pool (4070+3060+2070+M2, 32B) | 3.0 tok/s |
+| Same pool + speculation | 5.4 tok/s |
+
+RPC pooling is only useful when the model doesn't fit on one machine. When it does fit locally, don't pool — just use speculation with a remote drafter.
 
 ### Use Cases
 
+- **Models too big for one machine:** Pool GPUs via RPC, then speculate on top — the draft model turns 3 tok/s into 5+ tok/s. A 70B model across 4 consumer GPUs becomes usable
 - **Local multi-GPU:** Draft on a consumer GPU ($200), verify on a larger GPU/rig
 - **Cloud cost reduction:** Draft locally, verify via cloud API — fewer API calls for the same output quality
-- **CPU draft, GPU verify:** Run a tiny model (0.6B-1.7B) on CPU/RAM, verify on GPU. Turns every idle CPU in a datacenter into usable inference compute
-- **Multi-drafter parallelism:** Multiple CPUs each run a draft model in parallel, the GPU target picks the best candidate. Mimics datacenter topology where idle CPUs are abundant and GPUs are scarce
+- **CPU draft, GPU verify:** Run a tiny model (0.6B-1.7B) on CPU/RAM, verify on GPU. Turns every idle CPU into usable inference compute
+- **Multi-drafter parallelism:** Multiple CPUs each run a draft model in parallel, the GPU target picks the best candidate
 - **Legacy GPU revival:** A 12-year-old GPU with 2GB VRAM can run Qwen3-1.7B as a draft model for a 72B target — turning e-waste into productive infrastructure
-- **Edge + datacenter:** Fast local responses with datacenter-grade accuracy
+- **Junk drawer inference:** Pool ALL your hardware — CUDA, ROCm, Metal, CPU — into one endpoint. The speculative proxy handles the coordination. No GPU left behind
 
 ## Why Tightwad?
 

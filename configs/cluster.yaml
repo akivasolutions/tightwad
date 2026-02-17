@@ -55,8 +55,8 @@ proxy:
   max_draft_tokens: 32
   fallback_on_draft_failure: true
   draft:
-    url: http://192.168.1.101:8081
-    model_name: qwen3-8b
+    url: http://127.0.0.1:8081
+    model_name: qwen3-1.7b
     backend: llamacpp
   # drafters:
   #   - url: http://192.168.1.101:8081
@@ -72,7 +72,7 @@ proxy:
   #     model_name: qwen3-8b
   #     backend: llamacpp
   target:
-    url: http://192.168.1.100:8080
+    url: http://192.168.1.100:8090
     model_name: qwen3-32b
     backend: llamacpp
 
