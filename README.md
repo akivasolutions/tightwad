@@ -1,4 +1,4 @@
-# Hydra-Inference
+# Tightwad
 
 Mixed-vendor GPU inference cluster manager with speculative decoding proxy. Pools CUDA and ROCm GPUs across machines using [llama.cpp RPC](https://github.com/ggml-org/llama.cpp/blob/master/tools/rpc), and accelerates inference via application-layer speculative decoding across network-separated servers.
 
@@ -16,14 +16,14 @@ A fast small model (e.g., 8B on a consumer GPU) drafts candidate tokens, a large
 Client (OpenAI API)
         │
         ▼
-┌─────────────────────────┐
-│   Hydra Proxy (:8088)   │  Python async server
-│   Speculation Loop:     │
-│   1. Draft 8 tokens     │──► Draft: Qwen3-8B (fast, local)
-│   2. Verify batch       │──► Target: Qwen3-72B (accurate, local or API)
-│   3. Accept/reject      │
-│   4. Stream to client   │
-└─────────────────────────┘
+┌──────────────────────────────┐
+│   Tightwad Proxy (:8088)      │  Python async server
+│   Speculation Loop:          │
+│   1. Draft 8 tokens          │──► Draft: Qwen3-8B (fast, local)
+│   2. Verify batch            │──► Target: Qwen3-72B (accurate, local or API)
+│   3. Accept/reject           │
+│   4. Stream to client        │
+└──────────────────────────────┘
 ```
 
 **Why not just use RPC?** RPC ships 100-300 MB of tensor data per step over the network. The speculative proxy ships token IDs (bytes). For models that fit on a single machine's VRAM, speculation is dramatically faster.
@@ -45,10 +45,10 @@ vim configs/cluster.yaml
 
 ```bash
 # Start the proxy (draft + target servers must be running)
-hydra proxy start
+tightwad proxy start
 
 # Check health and acceptance rate stats
-hydra proxy status
+tightwad proxy status
 
 # Test it
 curl http://localhost:8088/v1/chat/completions \
@@ -56,29 +56,29 @@ curl http://localhost:8088/v1/chat/completions \
   -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
 
 # Detailed stats
-curl http://localhost:8088/v1/hydra/status
+curl http://localhost:8088/v1/tightwad/status
 
 # Stop
-hydra proxy stop
+tightwad proxy stop
 ```
 
 ### RPC Cluster
 
 ```bash
 # Check cluster status
-hydra status
+tightwad status
 
 # Start (after rpc-server instances are running on workers)
-hydra start
+tightwad start
 
 # Hot-swap to a different model (RPC workers persist)
-hydra swap deepseek-r1-70b
+tightwad swap deepseek-r1-70b
 
 # Benchmark
-hydra benchmark
+tightwad benchmark
 
 # Stop
-hydra stop
+tightwad stop
 ```
 
 ## Configuration
@@ -155,16 +155,16 @@ The output is **provably identical** to running the large model alone — the sm
 
 | Command | Description |
 |---------|-------------|
-| `hydra proxy start` | Start speculative decoding proxy |
-| `hydra proxy stop` | Stop the proxy |
-| `hydra proxy status` | Show draft/target health + acceptance rate stats |
-| `hydra status` | Show RPC cluster status |
-| `hydra start [-m MODEL]` | Start RPC coordinator |
-| `hydra stop` | Stop the coordinator |
-| `hydra swap MODEL` | Hot-swap model (workers persist) |
-| `hydra benchmark` | Benchmark the running coordinator |
+| `tightwad proxy start` | Start speculative decoding proxy |
+| `tightwad proxy stop` | Stop the proxy |
+| `tightwad proxy status` | Show draft/target health + acceptance rate stats |
+| `tightwad status` | Show RPC cluster status |
+| `tightwad start [-m MODEL]` | Start RPC coordinator |
+| `tightwad stop` | Stop the coordinator |
+| `tightwad swap MODEL` | Hot-swap model (workers persist) |
+| `tightwad benchmark` | Benchmark the running coordinator |
 
-Global option: `-c /path/to/cluster.yaml` or `HYDRA_CONFIG` env var.
+Global option: `-c /path/to/cluster.yaml` or `TIGHTWAD_CONFIG` env var.
 
 ## API Endpoints (Proxy)
 
@@ -173,7 +173,7 @@ Global option: `-c /path/to/cluster.yaml` or `HYDRA_CONFIG` env var.
 | `/v1/completions` | POST | Text completion (OpenAI-compatible) |
 | `/v1/chat/completions` | POST | Chat completion (OpenAI-compatible) |
 | `/v1/models` | GET | List available models |
-| `/v1/hydra/status` | GET | Proxy stats: acceptance rate, rounds, throughput |
+| `/v1/tightwad/status` | GET | Proxy stats: acceptance rate, rounds, throughput |
 
 All endpoints support `stream: true` for SSE streaming.
 
@@ -209,7 +209,7 @@ pytest tests/ -v
 ## Project Structure
 
 ```
-hydra/
+tightwad/
 ├── config.py        # YAML config loader (cluster + proxy)
 ├── cli.py           # Click CLI (cluster + proxy commands)
 ├── coordinator.py   # llama-server lifecycle management

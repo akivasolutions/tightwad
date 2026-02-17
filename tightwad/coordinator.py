@@ -11,7 +11,7 @@ from pathlib import Path
 from .config import ClusterConfig, ModelConfig
 from .worker import check_all_workers, check_coordinator_health, wait_for_workers
 
-PIDFILE = Path.home() / ".hydra" / "coordinator.pid"
+PIDFILE = Path.home() / ".tightwad" / "coordinator.pid"
 
 
 def build_server_args(config: ClusterConfig, model: ModelConfig) -> list[str]:
@@ -67,7 +67,7 @@ def start(config: ClusterConfig, model_name: str | None = None) -> int:
             os.kill(pid, 0)
             raise RuntimeError(
                 f"Coordinator already running (PID {pid}). "
-                "Use 'hydra stop' first."
+                "Use 'tightwad stop' first."
             )
         except ProcessLookupError:
             PIDFILE.unlink()

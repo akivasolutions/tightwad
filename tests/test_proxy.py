@@ -6,8 +6,8 @@ import pytest
 import pytest_asyncio
 from starlette.testclient import TestClient
 
-from hydra.config import ProxyConfig, ServerEndpoint
-from hydra.proxy import apply_chat_template, create_app
+from tightwad.config import ProxyConfig, ServerEndpoint
+from tightwad.proxy import apply_chat_template, create_app
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ class TestProxyApp:
         """When draft/target are unreachable, status shows not alive."""
         app = create_app(proxy_config)
         client = TestClient(app)
-        resp = client.get("/v1/hydra/status")
+        resp = client.get("/v1/tightwad/status")
         assert resp.status_code == 200
         data = resp.json()
         assert data["draft"]["model"] == "qwen3-8b"
@@ -98,7 +98,7 @@ class TestProxyApp:
 class TestSSEFormat:
     def test_sse_chunk_format(self):
         """SSE data lines should be valid JSON."""
-        line = 'data: {"id":"cmpl-hydra-1","object":"text_completion","choices":[{"index":0,"text":"hello","finish_reason":null}]}'
+        line = 'data: {"id":"cmpl-tightwad-1","object":"text_completion","choices":[{"index":0,"text":"hello","finish_reason":null}]}'
         assert line.startswith("data: ")
         payload = json.loads(line[6:])
         assert payload["object"] == "text_completion"

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from hydra.config import ClusterConfig, ProxyConfig, load_config
+from tightwad.config import ClusterConfig, ProxyConfig, load_config
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-"""CLI interface for Hydra cluster management."""
+"""CLI interface for Tightwad cluster management."""
 
 from __future__ import annotations
 
@@ -19,13 +19,13 @@ console = Console()
 @click.group()
 @click.option(
     "-c", "--config",
-    envvar="HYDRA_CONFIG",
+    envvar="TIGHTWAD_CONFIG",
     default=None,
     help="Path to cluster.yaml config file",
 )
 @click.pass_context
 def cli(ctx, config):
-    """Hydra — Mixed-vendor GPU inference cluster manager."""
+    """Tightwad — Mixed-vendor GPU inference cluster manager with speculative decoding."""
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config
 
@@ -220,7 +220,7 @@ def proxy_start(ctx):
             os.kill(existing_pid, 0)
             console.print(
                 f"[yellow]Proxy already running (PID {existing_pid}). "
-                f"Stop it first with: hydra proxy stop[/yellow]"
+                f"Stop it first with: tightwad proxy stop[/yellow]"
             )
             sys.exit(1)
         except ProcessLookupError:
@@ -263,7 +263,7 @@ def proxy_status(ctx):
     import httpx
 
     pc = config.proxy
-    url = f"http://127.0.0.1:{pc.port}/v1/hydra/status"
+    url = f"http://127.0.0.1:{pc.port}/v1/tightwad/status"
 
     try:
         resp = httpx.get(url, timeout=5.0)

@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hydra-inference"
+name = "tightwad"
 version = "0.1.0"
-description = "Mixed-vendor GPU inference cluster manager using llama.cpp RPC"
+description = "Mixed-vendor GPU inference cluster manager with speculative decoding"
 requires-python = ">=3.10"
 dependencies = [
     "pyyaml>=6.0",
@@ -20,7 +20,7 @@ dependencies = [
 dev = ["pytest>=7.0", "pytest-asyncio>=0.21", "httpx[http2]>=0.25"]
 
 [project.scripts]
-hydra = "hydra.cli:cli"
+tightwad = "tightwad.cli:cli"
 
 [tool.setuptools.packages.find]
-include = ["hydra*"]
+include = ["tightwad*"]

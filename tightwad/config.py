@@ -103,7 +103,7 @@ class ClusterConfig:
 def load_config(path: str | Path | None = None) -> ClusterConfig:
     """Load cluster config from YAML file."""
     config_path = Path(path) if path else Path(
-        os.environ.get("HYDRA_CONFIG", DEFAULT_CONFIG)
+        os.environ.get("TIGHTWAD_CONFIG", DEFAULT_CONFIG)
     )
 
     with open(config_path) as f:

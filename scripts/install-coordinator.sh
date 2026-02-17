@@ -7,7 +7,7 @@ set -euo pipefail
 BUILD_DIR="${1:-$HOME/llama.cpp}"
 GPU_TARGET="${AMDGPU_TARGET:-gfx1100}"  # 7900 XTX
 
-echo "=== Hydra Coordinator Setup (ROCm) ==="
+echo "=== Tightwad Coordinator Setup (ROCm) ==="
 echo "Build dir: $BUILD_DIR"
 echo "GPU target: $GPU_TARGET"
 

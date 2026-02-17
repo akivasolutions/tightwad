@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Standardized benchmark for Hydra cluster
+# Standardized benchmark for Tightwad cluster
 # Usage: ./benchmark.sh [host:port]
 
 set -euo pipefail
 
 SERVER="${1:-127.0.0.1:8080}"
 
-echo "=== Hydra Benchmark ==="
+echo "=== Tightwad Benchmark ==="
 echo "Server: $SERVER"
 echo ""
 

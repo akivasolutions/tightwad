@@ -3,8 +3,8 @@
 import pytest
 import yaml
 
-from hydra.config import load_config
-from hydra.coordinator import build_server_args
+from tightwad.config import load_config
+from tightwad.coordinator import build_server_args
 
 
 @pytest.fixture

@@ -7,7 +7,7 @@ set -euo pipefail
 BUILD_DIR="${1:-$HOME/llama.cpp}"
 PORTS="${RPC_PORTS:-50052,50053}"
 
-echo "=== Hydra RPC Worker Setup ==="
+echo "=== Tightwad RPC Worker Setup ==="
 echo "Build dir: $BUILD_DIR"
 echo "RPC ports: $PORTS"
 
@@ -38,5 +38,5 @@ done
 echo ""
 echo "Or install as Windows services with NSSM:"
 for port in "${PORT_ARRAY[@]}"; do
-    echo "  nssm install hydra-rpc-$port $BUILD_DIR/build/bin/rpc-server.exe -p $port"
+    echo "  nssm install tightwad-rpc-$port $BUILD_DIR/build/bin/rpc-server.exe -p $port"
 done

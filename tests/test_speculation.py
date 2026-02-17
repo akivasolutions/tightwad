@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from hydra.speculation import (
+from tightwad.speculation import (
     DraftToken,
     TargetLogprob,
     VerificationResult,

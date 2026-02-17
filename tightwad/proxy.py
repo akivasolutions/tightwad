@@ -25,9 +25,9 @@ from .speculation import (
     verify_draft_tokens,
 )
 
-logger = logging.getLogger("hydra.proxy")
+logger = logging.getLogger("tightwad.proxy")
 
-PIDFILE = Path.home() / ".hydra" / "proxy.pid"
+PIDFILE = Path.home() / ".tightwad" / "proxy.pid"
 
 
 @dataclass
@@ -311,7 +311,7 @@ class SpeculativeProxy:
 
                     # SSE chunk
                     sse_data = {
-                        "id": f"cmpl-hydra-{id(self)}",
+                        "id": f"cmpl-tightwad-{id(self)}",
                         "object": "text_completion",
                         "choices": [{
                             "index": 0,
@@ -326,7 +326,7 @@ class SpeculativeProxy:
 
                 # Final chunk with finish_reason
                 final = {
-                    "id": f"cmpl-hydra-{id(self)}",
+                    "id": f"cmpl-tightwad-{id(self)}",
                     "object": "text_completion",
                     "choices": [{
                         "index": 0,
@@ -360,7 +360,7 @@ class SpeculativeProxy:
                     break
 
             return {
-                "id": f"cmpl-hydra-{id(self)}",
+                "id": f"cmpl-tightwad-{id(self)}",
                 "object": "text_completion",
                 "choices": [{
                     "index": 0,
@@ -528,12 +528,12 @@ async def handle_models(request: Request):
             {
                 "id": proxy.config.target.model_name,
                 "object": "model",
-                "owned_by": "hydra",
+                "owned_by": "tightwad",
             },
             {
                 "id": proxy.config.draft.model_name,
                 "object": "model",
-                "owned_by": "hydra",
+                "owned_by": "tightwad",
                 "meta": {"role": "draft"},
             },
         ],
@@ -555,7 +555,7 @@ def create_app(config: ProxyConfig) -> Starlette:
             Route("/v1/completions", handle_completion, methods=["POST"]),
             Route("/v1/chat/completions", handle_chat_completion, methods=["POST"]),
             Route("/v1/models", handle_models, methods=["GET"]),
-            Route("/v1/hydra/status", handle_status, methods=["GET"]),
+            Route("/v1/tightwad/status", handle_status, methods=["GET"]),
         ],
         lifespan=lifespan,
     )
