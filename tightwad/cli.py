@@ -324,6 +324,70 @@ def proxy_status(ctx):
         console.print("\n[dim]No speculation rounds yet.[/dim]")
 
 
+@cli.command("inspect")
+@click.argument("model_path", type=click.Path(exists=True))
+@click.option("--plan", "show_plan", is_flag=True, help="Show distribution plan for current cluster")
+@click.pass_context
+def inspect_cmd(ctx, model_path, show_plan):
+    """Inspect a GGUF model file: metadata, tensors, distribution plan."""
+    try:
+        from .gguf_inspect import inspect_model, plan_distribution, format_report
+    except ImportError:
+        console.print("[red]Missing gguf package. Install with: pip install tightwad[inspect][/red]")
+        sys.exit(1)
+
+    model_info = inspect_model(model_path)
+    plan = None
+    if show_plan:
+        config = _load(ctx)
+        plan = plan_distribution(model_info, config)
+
+    output = format_report(model_info, plan)
+    console.print(output)
+
+
+@cli.command("distribute")
+@click.argument("model_name")
+@click.option("-t", "--target", "specific_target", default=None, help="Specific target as host:/path")
+@click.option("--dry-run", is_flag=True, help="Preview transfers without executing")
+@click.pass_context
+def distribute_cmd(ctx, model_name, specific_target, dry_run):
+    """Distribute a model to worker machines via rsync/scp."""
+    from .distribute import resolve_targets, distribute, format_dry_run
+
+    config = _load(ctx)
+    try:
+        local_path, targets = resolve_targets(config, model_name, specific_target)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    if not targets:
+        console.print("[yellow]No targets with model_dir configured. "
+                       "Add model_dir to workers in config or use -t host:/path.[/yellow]")
+        sys.exit(1)
+
+    if dry_run:
+        console.print(format_dry_run(local_path, targets))
+        return
+
+    if not local_path.exists():
+        console.print(f"[red]Model file not found: {local_path}[/red]")
+        sys.exit(1)
+
+    console.print(f"[bold]Distributing {local_path.name} to {len(targets)} target(s)...[/bold]\n")
+    results = distribute(local_path, targets, console)
+
+    failed = [r for r in results if not r.success]
+    if failed:
+        console.print(f"\n[red]{len(failed)} transfer(s) failed:[/red]")
+        for r in failed:
+            console.print(f"  {r.target.worker_name}: {r.message}")
+        sys.exit(1)
+    else:
+        console.print(f"\n[green]All {len(results)} transfer(s) complete.[/green]")
+
+
 @cli.command()
 @click.option("--direct", is_flag=True, help="Chat directly with target (no speculation, for comparison)")
 @click.pass_context

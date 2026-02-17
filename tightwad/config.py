@@ -23,6 +23,8 @@ class GPU:
 class Worker:
     host: str
     gpus: list[GPU] = field(default_factory=list)
+    ssh_user: str | None = None
+    model_dir: str | None = None
 
     @property
     def rpc_addresses(self) -> list[str]:
@@ -122,7 +124,12 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
             GPU(name=g["name"], vram_gb=g["vram_gb"], rpc_port=g["rpc_port"])
             for g in w.get("gpus", [])
         ]
-        workers.append(Worker(host=w["host"], gpus=gpus))
+        workers.append(Worker(
+            host=w["host"],
+            gpus=gpus,
+            ssh_user=w.get("ssh_user"),
+            model_dir=w.get("model_dir"),
+        ))
 
     models = {}
     for name, m in raw.get("models", {}).items():
