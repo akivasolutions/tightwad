@@ -61,6 +61,8 @@ The small model is like autocomplete on your phone — it suggests, the big mode
 
 Combine GPUs from different machines and vendors into a single OpenAI-compatible API. The coordinator distributes model layers across local and remote GPUs.
 
+> **Note:** The coordinator machine needs enough **system RAM** for the full model file (not just its GPU share). llama.cpp mmaps the entire GGUF before distributing tensors to workers. A 70B Q4_K_M (~40GB) needs ~44GB RAM on the coordinator.
+
 ### 2. Speculative Decoding Proxy — Draft + Verify across machines
 
 A fast small model (e.g., 8B on a consumer GPU) drafts candidate tokens, a large model (e.g., 72B on a server or cloud API) verifies them in batch. Output quality is **equivalent to running the large model alone**, but up to 2-3x faster because batch verification is much cheaper than autoregressive generation.
