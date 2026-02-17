@@ -93,7 +93,7 @@ proxy:
   max_draft_tokens: 8
   fallback_on_draft_failure: true
   draft:
-    url: http://192.168.1.101:11434   # Ollama on a cheap GPU
+    url: http://192.168.1.50:11434   # Ollama on a cheap GPU
     model_name: qwen3:8b
     backend: ollama                     # or "llamacpp"
   target:

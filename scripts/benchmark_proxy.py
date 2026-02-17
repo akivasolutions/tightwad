@@ -290,7 +290,7 @@ async def main():
         # Config 1: Same family — Qwen3-8B → Qwen3-32B
         {
             "name": "Qwen3-8B → Qwen3-32B (same family, Ollama)",
-            "draft_url": "http://192.168.1.101:11434",
+            "draft_url": "http://192.168.1.50:11434",
             "draft_model": "qwen3:8b",
             "draft_backend": "ollama",
             "target_url": "http://192.168.1.100:11434",
