@@ -77,6 +77,29 @@ class ProxyConfig:
     #:
     #: Audit ref: SEC-5 / issue #7
     allow_private_upstream: bool = True
+    #: Maximum value allowed for ``max_tokens`` in completion requests.
+    #:
+    #: Requests that exceed this limit are rejected with ``400 Bad Request``
+    #: before the downstream server is contacted.  Very large ``max_tokens``
+    #: values can force the downstream llama.cpp server into an extremely long
+    #: generation — effectively a DoS against the backend.
+    #:
+    #: Configurable via ``TIGHTWAD_MAX_TOKENS_LIMIT`` env var or
+    #: ``proxy.max_tokens_limit`` in cluster.yaml.
+    #:
+    #: Audit ref: CQ-1 / issue #8
+    max_tokens_limit: int = 16384
+    #: Maximum allowed request body size in bytes.
+    #:
+    #: Requests whose ``Content-Length`` header exceeds this value are rejected
+    #: with ``413 Content Too Large`` *before* the body is buffered in memory,
+    #: preventing memory-exhaustion DoS via multi-gigabyte payloads.
+    #:
+    #: Configurable via ``TIGHTWAD_MAX_BODY_SIZE`` env var (bytes) or
+    #: ``proxy.max_body_size`` in cluster.yaml.
+    #:
+    #: Audit ref: CQ-5 / issue #8
+    max_body_size: int = 10 * 1024 * 1024  # 10 MB default
 
 
 @dataclass
@@ -162,6 +185,9 @@ def load_proxy_from_env() -> ProxyConfig | None:
         source="environment variable",
     )
 
+    max_tokens_limit = int(os.environ.get("TIGHTWAD_MAX_TOKENS_LIMIT", "16384"))
+    max_body_size = int(os.environ.get("TIGHTWAD_MAX_BODY_SIZE", str(10 * 1024 * 1024)))
+
     return ProxyConfig(
         draft=ServerEndpoint(
             url=draft_url,
@@ -178,6 +204,8 @@ def load_proxy_from_env() -> ProxyConfig | None:
         max_draft_tokens=int(os.environ.get("TIGHTWAD_MAX_DRAFT_TOKENS", "32")),
         auth_token=auth_token,
         allow_private_upstream=allow_private,
+        max_tokens_limit=max_tokens_limit,
+        max_body_size=max_body_size,
     )
 
 
@@ -335,6 +363,8 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
             drafters=drafter_endpoints,
             auth_token=resolved_token,
             allow_private_upstream=allow_private,
+            max_tokens_limit=p.get("max_tokens_limit", 16384),
+            max_body_size=p.get("max_body_size", 10 * 1024 * 1024),
         )
 
     return ClusterConfig(

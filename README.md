@@ -141,6 +141,8 @@ All `TIGHTWAD_*` env vars:
 | `TIGHTWAD_MAX_DRAFT_TOKENS` | `32` | Tokens per draft round |
 | `TIGHTWAD_PROXY_TOKEN` | *(unset)* | Bearer token for proxy API auth (recommended) |
 | `TIGHTWAD_ALLOW_PRIVATE_UPSTREAM` | `true` | SSRF: `false` = block private/LAN upstream IPs |
+| `TIGHTWAD_MAX_TOKENS_LIMIT` | `16384` | Hard cap on `max_tokens` in requests — rejects higher values with 400 (DoS mitigation) |
+| `TIGHTWAD_MAX_BODY_SIZE` | `10485760` | Max request body size in bytes (10 MB) — rejects oversized payloads with 413 before buffering |
 
 ### Proxy Authentication
 
@@ -507,6 +509,8 @@ proxy:
   port: 8088
   max_draft_tokens: 32              # Sweet spot for cross-machine (reduces HTTP round trips)
   fallback_on_draft_failure: true
+  max_tokens_limit: 16384           # Hard cap on max_tokens per request (DoS mitigation, CQ-1)
+  max_body_size: 10485760           # Max request body bytes — 10 MB (memory-exhaustion mitigation, CQ-5)
   draft:
     url: http://192.168.1.50:8081    # ← your draft machine's IP + port
     model_name: qwen3-8b

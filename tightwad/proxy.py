@@ -28,6 +28,11 @@ from .speculation import (
     VerificationResult,
     verify_draft_tokens,
 )
+from .validation import (
+    ValidationError,
+    parse_chat_completion_request,
+    parse_completion_request,
+)
 
 logger = logging.getLogger("tightwad.proxy")
 
@@ -887,27 +892,72 @@ def _get_proxy() -> SpeculativeProxy:
     return _proxy
 
 
+async def _check_body_size(request: Request, max_body_size: int) -> Response | None:
+    """Return a 413 Response if Content-Length exceeds *max_body_size*, else None.
+
+    Checks the ``Content-Length`` header eagerly so that oversized payloads
+    are rejected before the body is buffered in memory, preventing memory-
+    exhaustion DoS (audit ref: CQ-5 / issue #8).
+
+    When ``Content-Length`` is absent the check is skipped — the body will
+    be read normally and Starlette's own limits apply.
+    """
+    content_length_raw = request.headers.get("content-length")
+    if content_length_raw is not None:
+        try:
+            content_length = int(content_length_raw)
+        except ValueError:
+            return JSONResponse(
+                {"detail": "Invalid Content-Length header"},
+                status_code=400,
+            )
+        if content_length > max_body_size:
+            return JSONResponse(
+                {
+                    "detail": (
+                        f"Request body too large: {content_length} bytes "
+                        f"(limit is {max_body_size} bytes)"
+                    )
+                },
+                status_code=413,
+            )
+    return None
+
+
 async def handle_completion(request: Request):
     proxy = _get_proxy()
-    body = await request.json()
 
-    prompt = body.get("prompt", "")
-    max_tokens = body.get("max_tokens", 256)
-    temperature = body.get("temperature", 0.0)
-    stream = body.get("stream", False)
-    stop = body.get("stop")
-    if isinstance(stop, str):
-        stop = [stop]
+    # --- Body size check (CQ-5) ---
+    size_error = await _check_body_size(request, proxy.config.max_body_size)
+    if size_error is not None:
+        return size_error
+
+    # --- Parse & validate JSON body (CQ-1) ---
+    try:
+        raw_body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"detail": "Request body must be valid JSON with Content-Type: application/json"},
+            status_code=400,
+        )
+
+    try:
+        req = parse_completion_request(
+            raw_body,
+            max_tokens_limit=proxy.config.max_tokens_limit,
+        )
+    except ValidationError as exc:
+        return JSONResponse(exc.to_dict(), status_code=400)
 
     result = await proxy.generate_completion(
-        prompt=prompt,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        stream=stream,
-        stop=stop,
+        prompt=req.prompt,
+        max_tokens=req.max_tokens,
+        temperature=req.temperature,
+        stream=req.stream,
+        stop=req.stop,
     )
 
-    if stream:
+    if req.stream:
         return StreamingResponse(
             result,
             media_type="text/event-stream",
@@ -918,30 +968,46 @@ async def handle_completion(request: Request):
 
 async def handle_chat_completion(request: Request):
     proxy = _get_proxy()
-    body = await request.json()
 
-    messages = body.get("messages", [])
-    prompt = apply_chat_template(messages)
-    max_tokens = body.get("max_tokens", 256)
-    temperature = body.get("temperature", 0.0)
-    stream = body.get("stream", False)
-    stop = body.get("stop")
-    if isinstance(stop, str):
-        stop = [stop]
+    # --- Body size check (CQ-5) ---
+    size_error = await _check_body_size(request, proxy.config.max_body_size)
+    if size_error is not None:
+        return size_error
+
+    # --- Parse & validate JSON body (CQ-1) ---
+    try:
+        raw_body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"detail": "Request body must be valid JSON with Content-Type: application/json"},
+            status_code=400,
+        )
+
+    try:
+        req = parse_chat_completion_request(
+            raw_body,
+            max_tokens_limit=proxy.config.max_tokens_limit,
+        )
+    except ValidationError as exc:
+        return JSONResponse(exc.to_dict(), status_code=400)
+
+    # Convert validated ChatMessage objects to dicts for apply_chat_template
+    messages_dicts = [{"role": m.role, "content": m.content} for m in req.messages]
+    prompt = apply_chat_template(messages_dicts)
 
     # Add Qwen3 stop tokens
-    chat_stop = list(stop) if stop else []
+    chat_stop = list(req.stop) if req.stop else []
     chat_stop.append("<|im_end|>")
 
     result = await proxy.generate_completion(
         prompt=prompt,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        stream=stream,
+        max_tokens=req.max_tokens,
+        temperature=req.temperature,
+        stream=req.stream,
         stop=chat_stop,
     )
 
-    if stream:
+    if req.stream:
         return StreamingResponse(
             result,
             media_type="text/event-stream",
