@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import click
@@ -12,6 +13,8 @@ from rich.table import Table
 from . import coordinator, worker
 from .config import load_config
 from . import proxy as proxy_mod
+from . import manifest as manifest_mod
+from . import swarm_transfer as swarm_mod
 
 console = Console()
 
@@ -440,3 +443,223 @@ def chat(ctx, direct):
         except Exception as e:
             console.print(f"\n[red]Error: {e}[/red]\n")
             messages.pop()
+
+
+# --- Manifest subcommand group ---
+
+
+@cli.group()
+def manifest():
+    """Swarm manifest commands."""
+    pass
+
+
+@manifest.command("create")
+@click.argument("model_path", type=click.Path(exists=True))
+@click.option("--piece-size", default=64, type=int, help="Piece size in MB (default: 64)")
+@click.option("--no-inspect", is_flag=True, help="Skip GGUF metadata inspection")
+@click.option("-o", "--output", "output_path", default=None, type=click.Path(), help="Output manifest path")
+def manifest_create(model_path, piece_size, no_inspect, output_path):
+    """Create a swarm manifest for a GGUF model file."""
+    from pathlib import Path
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+
+    model_path = Path(model_path)
+    piece_bytes = piece_size * 1024 * 1024
+    total_size = model_path.stat().st_size
+    est_pieces = (total_size + piece_bytes - 1) // piece_bytes
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total} pieces"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Hashing pieces...", total=est_pieces)
+
+        def on_progress(done, _total):
+            progress.update(task, completed=done)
+
+        m = manifest_mod.create_manifest(
+            model_path,
+            piece_size=piece_bytes,
+            use_gguf_inspect=not no_inspect,
+            progress_callback=on_progress,
+        )
+
+    if output_path is None:
+        output_path = model_path.parent / f"{model_path.name}.tightwad.manifest"
+    else:
+        output_path = Path(output_path)
+
+    m.save(output_path)
+    console.print(f"\n[green]Manifest created:[/green] {output_path}")
+    console.print(f"  Model:    {m.model}")
+    console.print(f"  Size:     {m.total_size / (1024**3):.2f} GB")
+    console.print(f"  Pieces:   {m.num_pieces} x {piece_size} MB")
+    if m.metadata:
+        console.print(f"  Metadata: {json.dumps(m.metadata)}")
+
+
+# --- Swarm subcommand group ---
+
+
+@cli.group()
+def swarm():
+    """Swarm P2P transfer commands."""
+    pass
+
+
+@swarm.command("seed")
+@click.argument("model_path", type=click.Path(exists=True))
+@click.option("--port", default=9080, type=int, help="Seeder port (default: 9080)")
+@click.option("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+def swarm_seed(model_path, port, host):
+    """Start a swarm seeder for a model file."""
+    from pathlib import Path
+
+    model_path = Path(model_path)
+
+    # Load or create manifest
+    m = manifest_mod.SwarmManifest.find_for_model(model_path)
+    if m is None:
+        console.print("[yellow]No manifest found. Creating one...[/yellow]")
+        m = manifest_mod.create_manifest(model_path)
+        manifest_file = model_path.parent / f"{model_path.name}.tightwad.manifest"
+        m.save(manifest_file)
+        console.print(f"[green]Manifest saved:[/green] {manifest_file}")
+
+    # Build full bitfield (we have the complete file)
+    bf = manifest_mod.PieceBitfield.load_or_create(
+        model_path.parent / f"{model_path.name}.tightwad.pieces",
+        m.num_pieces,
+    )
+    # Verify we have all pieces if bitfield is empty
+    if not bf.have_all():
+        for piece in m.pieces:
+            if manifest_mod.verify_piece(model_path, piece):
+                bf.mark_have(piece.index)
+        bf.save()
+
+    console.print(f"\n[bold]Starting swarm seeder...[/bold]")
+    console.print(f"  Model:  {m.model} ({m.filename})")
+    console.print(f"  Pieces: {len(bf.have)}/{m.num_pieces} ({bf.completion_pct():.0f}%)")
+    console.print(f"  Listen: {host}:{port}")
+
+    swarm_mod.run_seeder(model_path, m, bf, host=host, port=port)
+
+
+@swarm.command("pull")
+@click.argument("dest_path", type=click.Path())
+@click.option("--manifest", "manifest_source", required=True, help="Path or URL to manifest")
+@click.option("--peer", "peers", multiple=True, required=True, help="Peer URL (repeatable)")
+@click.option("--parallel", default=4, type=int, help="Max concurrent downloads (default: 4)")
+def swarm_pull(dest_path, manifest_source, peers, parallel):
+    """Pull a model from swarm peers."""
+    from pathlib import Path
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+
+    dest_path = Path(dest_path)
+
+    # Load manifest from file or URL
+    if manifest_source.startswith("http://") or manifest_source.startswith("https://"):
+        import httpx
+        console.print(f"Fetching manifest from {manifest_source}...")
+        resp = httpx.get(manifest_source, timeout=30.0)
+        resp.raise_for_status()
+        m = manifest_mod.SwarmManifest.from_dict(resp.json())
+    else:
+        m = manifest_mod.SwarmManifest.load(manifest_source)
+
+    # Load or create bitfield for destination
+    bf = manifest_mod.PieceBitfield.load_or_create(
+        dest_path.parent / f"{dest_path.name}.tightwad.pieces",
+        m.num_pieces,
+    )
+
+    missing = bf.missing_pieces()
+    console.print(f"\n[bold]Pulling {m.filename}[/bold]")
+    console.print(f"  Pieces: {m.num_pieces} total, {len(missing)} to download")
+    console.print(f"  Peers:  {len(peers)}")
+    console.print(f"  Parallel: {parallel}")
+
+    if not missing:
+        console.print("\n[green]Already complete![/green]")
+        return
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Downloading pieces...", total=len(missing))
+
+        def on_progress(completed, total, piece_idx):
+            progress.update(task, completed=completed, description=f"Piece {piece_idx}")
+
+        ok = swarm_mod.run_puller(
+            dest_path, m, bf, list(peers),
+            max_concurrent=parallel,
+            progress_callback=on_progress,
+        )
+
+    if ok:
+        console.print(f"\n[green]Download complete:[/green] {dest_path}")
+    else:
+        console.print(f"\n[yellow]Download incomplete. Re-run to resume.[/yellow]")
+        sys.exit(1)
+
+
+@swarm.command("status")
+@click.argument("model_path", type=click.Path(exists=True))
+def swarm_status(model_path):
+    """Show swarm status for a model file."""
+    from pathlib import Path
+
+    model_path = Path(model_path)
+
+    m = manifest_mod.SwarmManifest.find_for_model(model_path)
+    if m is None:
+        console.print("[dim]No manifest found. Create one with:[/dim]")
+        console.print(f"  tightwad manifest create {model_path}")
+        return
+
+    bf = manifest_mod.PieceBitfield.load_or_create(
+        model_path.parent / f"{model_path.name}.tightwad.pieces",
+        m.num_pieces,
+    )
+
+    # Check if we have the full file but empty bitfield
+    if not bf.have and model_path.exists():
+        console.print("[dim]Verifying pieces...[/dim]")
+        for piece in m.pieces:
+            if manifest_mod.verify_piece(model_path, piece):
+                bf.mark_have(piece.index)
+        bf.save()
+
+    pct = bf.completion_pct()
+    missing = bf.missing_pieces()
+
+    console.print(f"\n[bold]Swarm Status:[/bold] {m.filename}")
+    console.print(f"  Model:      {m.model}")
+    console.print(f"  Size:       {m.total_size / (1024**3):.2f} GB")
+    console.print(f"  Pieces:     {m.num_pieces} x {m.piece_size // (1024*1024)} MB")
+    console.print(f"  Have:       {len(bf.have)}/{m.num_pieces} ({pct:.0f}%)")
+    if missing:
+        console.print(f"  Missing:    {len(missing)} pieces")
+    else:
+        console.print(f"  [green]Complete![/green]")
+    if m.metadata:
+        console.print(f"  Metadata:   {json.dumps(m.metadata)}")
+
+    # Check for running seeder
+    pid = swarm_mod.read_seeder_pidfile(m.model)
+    if pid is not None:
+        try:
+            os.kill(pid, 0)
+            console.print(f"  Seeder:     [green]running[/green] (PID {pid})")
+        except ProcessLookupError:
+            console.print(f"  Seeder:     [dim]not running[/dim]")
