@@ -575,6 +575,10 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 | `tightwad inspect <model.gguf> --plan` | Show distribution plan for current cluster |
 | `tightwad distribute MODEL` | Copy model to workers via rsync/scp |
 | `tightwad distribute MODEL --dry-run` | Preview transfers without executing |
+| `tightwad manifest create <model.gguf>` | Generate swarm manifest (piece hashes) |
+| `tightwad swarm seed <model.gguf>` | Start P2P seeder for a model |
+| `tightwad swarm pull <dest> --manifest <src> --peer <url>` | Pull model from swarm peers |
+| `tightwad swarm status <model.gguf>` | Show swarm completion status |
 
 Global option: `-c /path/to/cluster.yaml` or `TIGHTWAD_CONFIG` env var.
 
@@ -659,14 +663,17 @@ tightwad/
 ├── proxy.py         # Speculative decoding proxy server
 ├── speculation.py   # Verification algorithm (pure logic)
 ├── gguf_inspect.py  # GGUF model analysis + distribution planning
-└── distribute.py    # rsync/scp model to workers in parallel
+├── distribute.py    # rsync/scp model to workers in parallel
+├── manifest.py      # Swarm manifest generation + bitfield tracking
+└── swarm_transfer.py # P2P seeder (Starlette) + puller (async httpx)
 tests/
 ├── test_config.py
 ├── test_coordinator.py
 ├── test_speculation.py
 ├── test_proxy.py
 ├── test_inspect.py
-└── test_distribute.py
+├── test_distribute.py
+└── test_swarm.py
 configs/
 ├── cluster.yaml              # Hardware topology + proxy config
 └── cluster-unraid-coord.yaml # Unraid coordinator (128GB RAM, 70B+ models)
