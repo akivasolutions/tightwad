@@ -139,20 +139,29 @@ class TestLogprobsVerification:
             DraftToken(token_id=300, logprob=-0.15, text=" is"),
         ]
 
-        # Target generates 4 tokens (3 draft + 1 bonus), all match draft
-        mock_content = [
-            {"id": 100, "token": "The", "logprob": -0.05},
-            {"id": 200, "token": " answer", "logprob": -0.1},
-            {"id": 300, "token": " is", "logprob": -0.08},
-            {"id": 400, "token": " 42", "logprob": -0.3},  # bonus
-        ]
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"logprobs": {"content": mock_content}}]
+        # Target generates bonus token after verifying draft via prompt-append
+        completion_resp = MagicMock()
+        completion_resp.status_code = 200
+        completion_resp.raise_for_status = MagicMock()
+        completion_resp.json.return_value = {
+            "choices": [{"text": " 42", "logprobs": {"content": [
+                {"id": 400, "token": " 42", "logprob": -0.3},
+            ]}}]
         }
 
-        proxy.target_client.post = AsyncMock(return_value=mock_resp)
+        # Both tokenizers return matching IDs (same-family models)
+        tokenize_resp = MagicMock()
+        tokenize_resp.status_code = 200
+        tokenize_resp.raise_for_status = MagicMock()
+        tokenize_resp.json.return_value = {"tokens": [100, 200, 300]}
+
+        async def target_side_effect(url, **kwargs):
+            if "/tokenize" in url:
+                return tokenize_resp
+            return completion_resp
+
+        proxy.target_client.post = AsyncMock(side_effect=target_side_effect)
+        proxy.draft_client.post = AsyncMock(return_value=tokenize_resp)
 
         result = await proxy.verify_with_logprobs("prompt text", draft_tokens, temperature=0.0)
 
@@ -174,20 +183,47 @@ class TestLogprobsVerification:
             DraftToken(token_id=300, logprob=-0.15, text=" is"),
         ]
 
-        # Target agrees on first 2, disagrees at position 2
-        mock_content = [
-            {"id": 100, "token": "The", "logprob": -0.05},
-            {"id": 200, "token": " answer", "logprob": -0.1},
-            {"id": 999, "token": " was", "logprob": -0.08},  # disagree
-            {"id": 400, "token": " 42", "logprob": -0.3},  # bonus (unused)
-        ]
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"logprobs": {"content": mock_content}}]
+        # Prompt-append completion response (used first)
+        completion_resp = MagicMock()
+        completion_resp.status_code = 200
+        completion_resp.raise_for_status = MagicMock()
+        completion_resp.json.return_value = {
+            "choices": [{"text": "", "logprobs": {"content": []}}]
         }
 
-        proxy.target_client.post = AsyncMock(return_value=mock_resp)
+        # Target tokenizer returns different IDs — triggers fallback path
+        target_tok_resp = MagicMock()
+        target_tok_resp.status_code = 200
+        target_tok_resp.raise_for_status = MagicMock()
+        target_tok_resp.json.return_value = {"tokens": [100, 200, 999]}
+
+        draft_tok_resp = MagicMock()
+        draft_tok_resp.status_code = 200
+        draft_tok_resp.raise_for_status = MagicMock()
+        draft_tok_resp.json.return_value = {"tokens": [100, 200, 300]}
+
+        # Fallback: target generates N+1 tokens from base prompt
+        fallback_resp = MagicMock()
+        fallback_resp.status_code = 200
+        fallback_resp.raise_for_status = MagicMock()
+        fallback_resp.json.return_value = {
+            "choices": [{"logprobs": {"content": [
+                {"id": 100, "token": "The", "logprob": -0.05},
+                {"id": 200, "token": " answer", "logprob": -0.1},
+                {"id": 999, "token": " was", "logprob": -0.08},
+                {"id": 400, "token": " 42", "logprob": -0.3},
+            ]}}]
+        }
+
+        # target_client.post is called 3 times:
+        # 1) /v1/completions (prompt-append), 2) /tokenize, 3) /v1/completions (fallback)
+        target_calls = iter([completion_resp, target_tok_resp, fallback_resp])
+
+        async def target_side_effect(url, **kwargs):
+            return next(target_calls)
+
+        proxy.target_client.post = AsyncMock(side_effect=target_side_effect)
+        proxy.draft_client.post = AsyncMock(return_value=draft_tok_resp)
 
         result = await proxy.verify_with_logprobs("prompt", draft_tokens, temperature=0.0)
 
