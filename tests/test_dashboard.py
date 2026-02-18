@@ -19,7 +19,7 @@ from tightwad.proxy import (
 def proxy_config():
     return ProxyConfig(
         draft=ServerEndpoint(url="http://draft:8081", model_name="qwen3-8b"),
-        target=ServerEndpoint(url="http://target:8080", model_name="qwen3-72b"),
+        target=ServerEndpoint(url="http://target:8080", model_name="qwen3-32b"),
         host="0.0.0.0",
         port=8088,
         max_draft_tokens=8,
@@ -69,7 +69,7 @@ class TestHistoryEndpoint:
             verify_ms=200.0,
             total_ms=380.0,
             tokens_output=20,
-            model="qwen3-72b",
+            model="qwen3-32b",
         ))
 
         resp = client.get("/v1/tightwad/history")

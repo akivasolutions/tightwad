@@ -29,8 +29,8 @@ def config(tmp_path):
             }
         ],
         "models": {
-            "qwen3-72b": {
-                "path": "/models/qwen3-72b.gguf",
+            "qwen3-32b": {
+                "path": "/models/qwen3-32b.gguf",
                 "ctx_size": 8192,
                 "predict": 4096,
                 "flash_attn": True,
@@ -50,7 +50,7 @@ def test_build_args_basic(config):
 
     assert args[0] == "llama-server"
     assert "-m" in args
-    assert args[args.index("-m") + 1] == "/models/qwen3-72b.gguf"
+    assert args[args.index("-m") + 1] == "/models/qwen3-32b.gguf"
     assert "-ngl" in args
     assert "999" in args
     assert "--flash-attn" in args

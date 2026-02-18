@@ -40,7 +40,7 @@ YOUR HARDWARE (any mix works)                         TIGHTWAD
 |---|---|---|
 | **Your chat app** | Open WebUI, ChatBot UI, etc. | Same app, no changes |
 | **Points at** | `http://192.168.1.10:11434` (Ollama on one machine) | `http://192.168.1.10:8088` (Tightwad proxy) |
-| **Model you talk to** | Qwen3-72B | Qwen3-72B (same model, same output) |
+| **Model you talk to** | Qwen3-32B | Qwen3-32B (same model, same output) |
 | **What you see** | Normal chat responses | Normal chat responses, just faster |
 | **The small model** | Doesn't exist | Hidden — drafting on a different machine entirely |
 | **Other machines** | Idle, wasted | RTX 2070, old Xeon, laptop — all contributing |
@@ -96,7 +96,7 @@ Client (OpenAI API)
 │   Tightwad Proxy (:8088)      │  Python async server
 │   Speculation Loop:          │
 │   1. Draft 8 tokens          │──► Draft: Qwen3-8B (fast, local)
-│   2. Verify batch            │──► Target: Qwen3-72B (accurate, local or API)
+│   2. Verify batch            │──► Target: Qwen3-32B (accurate, local or API)
 │   3. Accept/reject           │
 │   4. Stream to client        │
 └──────────────────────────────┘

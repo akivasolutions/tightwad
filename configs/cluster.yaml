@@ -36,8 +36,8 @@ models:
     default: true
 
   # Uncomment when 70B models are downloaded:
-  # qwen3-72b:
-  #   path: C:/Users/youruser/models/Qwen3-72B-Q4_K_M.gguf
+  # llama3.3-70b:
+  #   path: C:/Users/youruser/models/Llama-3.3-70B-Q4_K_M.gguf
   #   ctx_size: 8192
   #   predict: 4096
   #   flash_attn: true

@@ -16,7 +16,7 @@ from tightwad.speculation import DraftToken
 def proxy_config():
     return ProxyConfig(
         draft=ServerEndpoint(url="http://draft:8081", model_name="qwen3-8b"),
-        target=ServerEndpoint(url="http://target:8080", model_name="qwen3-72b"),
+        target=ServerEndpoint(url="http://target:8080", model_name="qwen3-32b"),
         host="0.0.0.0",
         port=8088,
         max_draft_tokens=8,
@@ -68,7 +68,7 @@ class TestProxyApp:
         data = resp.json()
         assert data["object"] == "list"
         assert len(data["data"]) == 2
-        assert data["data"][0]["id"] == "qwen3-72b"
+        assert data["data"][0]["id"] == "qwen3-32b"
         assert data["data"][1]["id"] == "qwen3-8b"
 
     def test_status_endpoint_servers_down(self, proxy_config):
@@ -79,7 +79,7 @@ class TestProxyApp:
         assert resp.status_code == 200
         data = resp.json()
         assert data["draft"]["model"] == "qwen3-8b"
-        assert data["target"]["model"] == "qwen3-72b"
+        assert data["target"]["model"] == "qwen3-32b"
         assert data["draft"]["health"]["alive"] is False
         assert data["target"]["health"]["alive"] is False
         assert data["stats"]["total_rounds"] == 0
@@ -102,7 +102,7 @@ class TestLogprobsVerification:
     def llamacpp_config(self):
         return ProxyConfig(
             draft=ServerEndpoint(url="http://draft:8081", model_name="qwen3-8b", backend="llamacpp"),
-            target=ServerEndpoint(url="http://target:8080", model_name="qwen3-72b", backend="llamacpp"),
+            target=ServerEndpoint(url="http://target:8080", model_name="qwen3-32b", backend="llamacpp"),
             host="0.0.0.0",
             port=8088,
             max_draft_tokens=4,
@@ -123,7 +123,7 @@ class TestLogprobsVerification:
     def test_cannot_use_logprobs_mixed(self):
         config = ProxyConfig(
             draft=ServerEndpoint(url="http://draft:11434", model_name="qwen3-8b", backend="ollama"),
-            target=ServerEndpoint(url="http://target:8080", model_name="qwen3-72b", backend="llamacpp"),
+            target=ServerEndpoint(url="http://target:8080", model_name="qwen3-32b", backend="llamacpp"),
         )
         proxy = SpeculativeProxy(config)
         assert proxy._can_use_logprobs() is False
