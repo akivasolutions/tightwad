@@ -245,20 +245,40 @@ function updateChart() {
 
 function updateHealth(data) {
   var el = document.getElementById('health-list');
-  var html = '';
+  // Clear existing content safely (no dynamic data involved).
+  while (el.firstChild) { el.removeChild(el.firstChild); }
+
   data.servers.forEach(function(s) {
-    var cls = s.alive ? 'alive' : 'dead';
+    // Build the row entirely with DOM methods so server-supplied strings
+    // (role, model, backend, url) are treated as plain text and cannot
+    // inject HTML or execute scripts.
+    var row = document.createElement('div');
+    row.className = 'server-row';
+
+    var dot = document.createElement('span');
+    dot.className = 'dot ' + (s.alive ? 'alive' : 'dead');
+    row.appendChild(dot);
+
     var role = s.role.charAt(0).toUpperCase() + s.role.slice(1);
-    html += '<div class="server-row">';
-    html += '<span class="dot ' + cls + '"></span>';
-    html += '<span class="server-label">' + role + ': ' + s.model + '</span>';
-    html += '<span class="server-meta">' + s.backend + ' @ ' + s.url + '</span>';
+    var label = document.createElement('span');
+    label.className = 'server-label';
+    label.textContent = role + ': ' + s.model;  // textContent auto-escapes
+    row.appendChild(label);
+
+    var meta = document.createElement('span');
+    meta.className = 'server-meta';
+    meta.textContent = s.backend + ' @ ' + s.url;  // textContent auto-escapes
+    row.appendChild(meta);
+
     if (s.wins !== undefined && s.wins > 0) {
-      html += '<span class="wins-badge">' + s.wins + ' wins</span>';
+      var badge = document.createElement('span');
+      badge.className = 'wins-badge';
+      badge.textContent = s.wins;  // numeric, but textContent is still safest
+      row.appendChild(badge);
     }
-    html += '</div>';
+
+    el.appendChild(row);
   });
-  el.innerHTML = html;
 }
 
 function updateStats(data) {
@@ -274,22 +294,45 @@ function updateStats(data) {
   updateChart();
 }
 
+/**
+ * Append one request-record row to the log table.
+ *
+ * All cell values come from server-supplied JSON, so each <td> is
+ * populated with textContent (never innerHTML) to prevent XSS.
+ * The only exception is clearing the placeholder row on first use,
+ * which is done safely via body.innerHTML = '' (no dynamic data).
+ */
 function addLogRow(r) {
   var body = document.getElementById('log-body');
+  // Remove the static "No requests yet" placeholder on first real row.
   if (logCount === 0) { body.innerHTML = ''; }
-  var tr = document.createElement('tr');
+
   var rc = rateClass(r.acceptance_rate);
-  tr.innerHTML =
-    '<td class="time-cell">' + formatTime(r.timestamp) + '</td>' +
-    '<td>' + r.rounds + '</td>' +
-    '<td>' + r.drafted + '</td>' +
-    '<td>' + r.accepted + '</td>' +
-    '<td class="' + rc + '">' + (r.acceptance_rate * 100).toFixed(1) + '%</td>' +
-    '<td class="ms-cell">' + r.draft_ms.toFixed(0) + '</td>' +
-    '<td class="ms-cell">' + r.verify_ms.toFixed(0) + '</td>' +
-    '<td class="ms-cell">' + r.total_ms.toFixed(0) + '</td>' +
-    '<td>' + r.tokens_output + '</td>' +
-    '<td class="server-meta">' + r.model + '</td>';
+
+  // Helper: create a <td> with a CSS class and plain-text content.
+  function td(cls, text) {
+    var cell = document.createElement('td');
+    if (cls) { cell.className = cls; }
+    cell.textContent = text;
+    return cell;
+  }
+
+  var tr = document.createElement('tr');
+  // Numeric fields (timestamp, rounds, drafted, …) are safe to coerce via
+  // toFixed/toString, but we still use textContent as the insertion method
+  // so that a compromised SSE payload cannot break out into raw HTML.
+  tr.appendChild(td('time-cell', formatTime(r.timestamp)));
+  tr.appendChild(td('', r.rounds));
+  tr.appendChild(td('', r.drafted));
+  tr.appendChild(td('', r.accepted));
+  tr.appendChild(td(rc, (r.acceptance_rate * 100).toFixed(1) + '%'));
+  tr.appendChild(td('ms-cell', r.draft_ms.toFixed(0)));
+  tr.appendChild(td('ms-cell', r.verify_ms.toFixed(0)));
+  tr.appendChild(td('ms-cell', r.total_ms.toFixed(0)));
+  tr.appendChild(td('', r.tokens_output));
+  // r.model is a server-supplied string — textContent prevents injection.
+  tr.appendChild(td('server-meta', r.model));
+
   body.insertBefore(tr, body.firstChild);
   logCount++;
   while (body.children.length > MAX_LOG) { body.removeChild(body.lastChild); }

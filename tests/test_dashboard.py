@@ -45,6 +45,102 @@ class TestDashboardHTML:
         assert "TIGHTWAD" in resp.text
         assert "EventSource" in resp.text
 
+    # ------------------------------------------------------------------
+    # SEC-2: XSS prevention — verify that the dashboard JavaScript uses
+    # safe DOM construction instead of innerHTML for server-supplied data.
+    # These tests inspect the *source* of the embedded JS to confirm that
+    # the vulnerable patterns are gone and the safe patterns are present.
+    # ------------------------------------------------------------------
+
+    def test_no_innerHTML_for_server_data(self, client):
+        """innerHTML must NOT be used to inject server-supplied values.
+
+        The only legitimate remaining innerHTML usage is the one-liner
+        that clears the log-body placeholder (``body.innerHTML = ''``),
+        which inserts no dynamic data.  Any pattern that concatenates a
+        server field (s.model, s.backend, s.url, r.model, etc.) into an
+        innerHTML assignment is a confirmed XSS vector and must be absent.
+        """
+        resp = client.get("/dashboard")
+        src = resp.text
+
+        # Check line-by-line: no non-comment line should assign innerHTML with
+        # a server-supplied field.  Comment lines (starting with * or //) are
+        # excluded because they may legitimately mention innerHTML.
+        xss_fields = ("s.model", "s.backend", "s.url", "r.model", "role +")
+        for line in src.splitlines():
+            stripped = line.strip()
+            # Skip comment/doc lines — they may discuss innerHTML for clarity.
+            if stripped.startswith("*") or stripped.startswith("//"):
+                continue
+            if "innerHTML" in stripped and "=" in stripped:
+                # Allow only the safe placeholder-clear (no dynamic data).
+                assert stripped == "if (logCount === 0) { body.innerHTML = ''; }", (
+                    f"Unsafe innerHTML assignment found: {stripped!r}"
+                )
+            for field in xss_fields:
+                if field in stripped and "innerHTML" in stripped:
+                    raise AssertionError(
+                        f"Server-supplied field {field!r} used with innerHTML on line: {stripped!r}"
+                    )
+
+        # The old tr.innerHTML bulk-assignment must not appear anywhere.
+        assert "tr.innerHTML" not in src, (
+            "tr.innerHTML used — switch to createElement/textContent (XSS risk)"
+        )
+
+    def test_safe_dom_methods_present(self, client):
+        """Confirm safe DOM construction methods are used in the dashboard."""
+        resp = client.get("/dashboard")
+        src = resp.text
+
+        # createElement must be used for building server-data nodes.
+        assert "createElement" in src, "Expected createElement usage for safe DOM construction"
+        # textContent must be the insertion method for dynamic values.
+        assert "textContent" in src, "Expected textContent usage to safely set server-supplied strings"
+        # The td() helper introduced by the fix should be present.
+        assert "function td(" in src, "Expected td() helper function for safe table-cell construction"
+
+    def test_updateHealth_uses_dom_not_innerHTML(self, client):
+        """updateHealth() must build server-card rows via DOM, not innerHTML."""
+        resp = client.get("/dashboard")
+        src = resp.text
+
+        # Locate the updateHealth function body.
+        start = src.find("function updateHealth(")
+        end = src.find("\nfunction ", start + 1)
+        fn_body = src[start:end] if end != -1 else src[start:]
+
+        assert "innerHTML" not in fn_body, (
+            "updateHealth() still contains innerHTML — XSS risk (SEC-2)"
+        )
+        assert "createElement" in fn_body, (
+            "updateHealth() should use createElement for server-supplied data"
+        )
+        assert "textContent" in fn_body, (
+            "updateHealth() should use textContent to set server-supplied strings"
+        )
+
+    def test_addLogRow_uses_dom_not_innerHTML(self, client):
+        """addLogRow() must build <td> cells via DOM, not innerHTML."""
+        resp = client.get("/dashboard")
+        src = resp.text
+
+        # Locate the addLogRow function body.
+        start = src.find("function addLogRow(")
+        end = src.find("\n// ", start + 1)  # next top-level comment
+        fn_body = src[start:end] if end != -1 else src[start:]
+
+        # body.innerHTML = '' (clearing placeholder) is acceptable;
+        # any other innerHTML assignment in this function is not.
+        lines_with_inner_html = [
+            line for line in fn_body.splitlines()
+            if "innerHTML" in line and "body.innerHTML = ''" not in line and "innerHTML) to prevent" not in line
+        ]
+        assert not lines_with_inner_html, (
+            f"addLogRow() has unsafe innerHTML usage: {lines_with_inner_html}"
+        )
+
 
 class TestHistoryEndpoint:
     def test_history_empty(self, client):
