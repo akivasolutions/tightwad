@@ -33,6 +33,23 @@ PIDFILE = Path.home() / ".tightwad" / "proxy.pid"
 
 
 @dataclass
+class RequestRecord:
+    timestamp: float
+    rounds: int
+    drafted: int
+    accepted: int
+    acceptance_rate: float
+    draft_ms: float
+    verify_ms: float
+    total_ms: float
+    tokens_output: int
+    model: str
+
+
+MAX_REQUEST_HISTORY = 50
+
+
+@dataclass
 class ProxyStats:
     total_rounds: int = 0
     total_drafted: int = 0
@@ -42,6 +59,7 @@ class ProxyStats:
     total_tokens_output: int = 0
     drafter_wins: dict[str, int] = field(default_factory=dict)
     start_time: float = field(default_factory=time.monotonic)
+    request_history: list = field(default_factory=list)
 
     @property
     def acceptance_rate(self) -> float:
@@ -513,13 +531,14 @@ class SpeculativeProxy:
 
     async def speculation_round(
         self, prompt: str, temperature: float = 0.0
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, bool, float, float]:
         """One full draft → verify → accept cycle.
 
-        Returns (accepted_text, is_done).
+        Returns (accepted_text, is_done, draft_ms, verify_ms).
         is_done is True if we hit EOS or empty generation.
         """
         # Draft phase
+        t0 = time.monotonic()
         try:
             if self._multi_drafter:
                 draft = await self.draft_tokens_parallel(
@@ -532,22 +551,26 @@ class SpeculativeProxy:
         except Exception as exc:
             if self.config.fallback_on_draft_failure:
                 logger.warning("Draft failed (%s: %s), falling back to target", type(exc).__name__, exc)
-                return await self._fallback_generate(
+                text, done = await self._fallback_generate(
                     prompt, self.config.max_draft_tokens, temperature
                 )
+                return text, done, 0.0, 0.0
             raise
+        draft_ms = (time.monotonic() - t0) * 1000
 
         if not draft:
-            return "", True
+            return "", True, draft_ms, 0.0
 
         draft_text = "".join(t.text for t in draft)
         if not draft_text:
-            return "", True
+            return "", True, draft_ms, 0.0
 
         # Verify phase
+        t1 = time.monotonic()
         if self._can_use_logprobs():
             # Logprobs batch verification — single forward pass on target
             result = await self.verify_with_logprobs(prompt, draft, temperature)
+            verify_ms = (time.monotonic() - t1) * 1000
             accepted_text = "".join(t.text for t in result.accepted_tokens)
             if result.resample_token and result.resample_token.text:
                 accepted_text += result.resample_token.text
@@ -568,12 +591,13 @@ class SpeculativeProxy:
                 self.stats.total_bonus += 1
 
             is_done = not accepted_text
-            return accepted_text, is_done
+            return accepted_text, is_done, draft_ms, verify_ms
         else:
             # Text-match fallback (Ollama or mixed backends)
             target_text, match_len, draft_len = await self.verify_text_match(
                 prompt, draft_text, temperature
             )
+            verify_ms = (time.monotonic() - t1) * 1000
 
             self.stats.total_rounds += 1
             self.stats.total_drafted += draft_len
@@ -584,7 +608,7 @@ class SpeculativeProxy:
                 self.stats.total_resampled += 1
 
             is_done = len(target_text) == 0
-            return target_text, is_done
+            return target_text, is_done, draft_ms, verify_ms
 
     async def _fallback_generate(
         self, prompt: str, n: int, temperature: float
@@ -593,6 +617,29 @@ class SpeculativeProxy:
         text = await self._generate_target(prompt, n, temperature)
         self.stats.total_tokens_output += len(text)
         return text, not text
+
+    def _record_request(
+        self, rounds: int, drafted: int, accepted: int,
+        draft_ms: float, verify_ms: float, total_ms: float,
+        tokens_output: int,
+    ):
+        """Append a RequestRecord to history (ring buffer, max 50)."""
+        rate = accepted / drafted if drafted > 0 else 0.0
+        record = RequestRecord(
+            timestamp=time.time(),
+            rounds=rounds,
+            drafted=drafted,
+            accepted=accepted,
+            acceptance_rate=round(rate, 3),
+            draft_ms=round(draft_ms, 1),
+            verify_ms=round(verify_ms, 1),
+            total_ms=round(total_ms, 1),
+            tokens_output=tokens_output,
+            model=self.config.target.model_name,
+        )
+        self.stats.request_history.append(record)
+        if len(self.stats.request_history) > MAX_REQUEST_HISTORY:
+            self.stats.request_history.pop(0)
 
     async def generate_completion(
         self,
@@ -609,10 +656,23 @@ class SpeculativeProxy:
         if stream:
             async def sse_stream():
                 nonlocal generated, tokens_generated
+                req_rounds = 0
+                req_drafted = 0
+                req_accepted = 0
+                req_draft_ms = 0.0
+                req_verify_ms = 0.0
+                req_t0 = time.monotonic()
+                stats_before_drafted = self.stats.total_drafted
+                stats_before_accepted = self.stats.total_accepted
+
                 while tokens_generated < max_tokens:
-                    chunk, done = await self.speculation_round(
+                    chunk, done, d_ms, v_ms = await self.speculation_round(
                         prompt + generated, temperature
                     )
+                    req_rounds += 1
+                    req_draft_ms += d_ms
+                    req_verify_ms += v_ms
+
                     if not chunk and done:
                         break
                     generated += chunk
@@ -656,12 +716,32 @@ class SpeculativeProxy:
                 yield f"data: {json.dumps(final)}\n\n"
                 yield "data: [DONE]\n\n"
 
+                req_drafted = self.stats.total_drafted - stats_before_drafted
+                req_accepted = self.stats.total_accepted - stats_before_accepted
+                req_total_ms = (time.monotonic() - req_t0) * 1000
+                self._record_request(
+                    req_rounds, req_drafted, req_accepted,
+                    req_draft_ms, req_verify_ms, req_total_ms,
+                    tokens_generated,
+                )
+
             return sse_stream()
         else:
+            req_rounds = 0
+            req_draft_ms = 0.0
+            req_verify_ms = 0.0
+            req_t0 = time.monotonic()
+            stats_before_drafted = self.stats.total_drafted
+            stats_before_accepted = self.stats.total_accepted
+
             while tokens_generated < max_tokens:
-                chunk, done = await self.speculation_round(
+                chunk, done, d_ms, v_ms = await self.speculation_round(
                     prompt + generated, temperature
                 )
+                req_rounds += 1
+                req_draft_ms += d_ms
+                req_verify_ms += v_ms
+
                 if not chunk and done:
                     break
                 generated += chunk
@@ -677,6 +757,15 @@ class SpeculativeProxy:
 
                 if done:
                     break
+
+            req_drafted = self.stats.total_drafted - stats_before_drafted
+            req_accepted = self.stats.total_accepted - stats_before_accepted
+            req_total_ms = (time.monotonic() - req_t0) * 1000
+            self._record_request(
+                req_rounds, req_drafted, req_accepted,
+                req_draft_ms, req_verify_ms, req_total_ms,
+                tokens_generated,
+            )
 
             return {
                 "id": f"cmpl-tightwad-{id(self)}",
@@ -974,6 +1063,8 @@ def create_app(config: ProxyConfig) -> Starlette:
     global _proxy
     _proxy = SpeculativeProxy(config)
 
+    from .dashboard import handle_dashboard, handle_events, handle_history
+
     @asynccontextmanager
     async def lifespan(app):
         yield
@@ -983,10 +1074,13 @@ def create_app(config: ProxyConfig) -> Starlette:
     app = Starlette(
         routes=[
             Route("/", handle_chat_ui, methods=["GET"]),
+            Route("/dashboard", handle_dashboard, methods=["GET"]),
             Route("/v1/completions", handle_completion, methods=["POST"]),
             Route("/v1/chat/completions", handle_chat_completion, methods=["POST"]),
             Route("/v1/models", handle_models, methods=["GET"]),
             Route("/v1/tightwad/status", handle_status, methods=["GET"]),
+            Route("/v1/tightwad/events", handle_events, methods=["GET"]),
+            Route("/v1/tightwad/history", handle_history, methods=["GET"]),
         ],
         lifespan=lifespan,
     )

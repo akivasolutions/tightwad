@@ -710,7 +710,7 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 | Command | Description |
 |---------|-------------|
 | `tightwad init` | Auto-discover LAN servers and generate cluster.yaml |
-| `tightwad proxy start` | Start speculative decoding proxy |
+| `tightwad proxy start` | Start speculative decoding proxy (dashboard at `/dashboard`) |
 | `tightwad proxy stop` | Stop the proxy |
 | `tightwad proxy status` | Show draft/target health + acceptance rate stats |
 | `tightwad chat` | Interactive chat via proxy with inline speculation stats |
@@ -746,10 +746,13 @@ Global option: `-c /path/to/cluster.yaml` or `TIGHTWAD_CONFIG` env var.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Browser-based chat UI |
+| `/dashboard` | GET | Live monitoring dashboard (health, charts, request log) |
 | `/v1/completions` | POST | Text completion (OpenAI-compatible) |
 | `/v1/chat/completions` | POST | Chat completion (OpenAI-compatible) |
 | `/v1/models` | GET | List available models |
 | `/v1/tightwad/status` | GET | Proxy stats: acceptance rate, rounds, throughput |
+| `/v1/tightwad/events` | GET | SSE stream of live stats, health, and request events |
+| `/v1/tightwad/history` | GET | JSON array of recent request records (max 50) |
 
 All endpoints support `stream: true` for SSE streaming. The chat UI at `/` provides an instant browser-based interface with streaming — no additional software required.
 
@@ -835,6 +838,7 @@ tightwad/
 ├── coordinator.py   # llama-server lifecycle management
 ├── worker.py        # RPC worker health checks
 ├── proxy.py         # Speculative decoding proxy server
+├── dashboard.py     # Live web dashboard (SSE, charts, request log)
 ├── speculation.py   # Verification algorithm (pure logic)
 ├── gguf_inspect.py  # GGUF model analysis + distribution planning
 ├── init_wizard.py   # LAN auto-discovery + interactive setup wizard

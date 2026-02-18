@@ -327,6 +327,7 @@ def proxy_start(ctx):
     console.print(f"  Target: {pc.target.model_name} @ {pc.target.url}")
     console.print(f"  Max draft tokens: {pc.max_draft_tokens}")
     console.print(f"  Listening on: {pc.host}:{pc.port}")
+    console.print(f"  Dashboard: http://127.0.0.1:{pc.port}/dashboard")
 
     import uvicorn
     LOGDIR.mkdir(parents=True, exist_ok=True)
