@@ -10,6 +10,9 @@ from tightwad.distribute import (
     build_transfer_cmd,
     resolve_targets,
     format_dry_run,
+    auto_select_method,
+    _build_swarm_pull_ssh_cmd,
+    SWARM_SIZE_THRESHOLD,
 )
 from tightwad.config import (
     GPU,
@@ -156,3 +159,91 @@ class TestFormatDryRun:
         ]
         output = format_dry_run(Path("/nonexistent/model.gguf"), targets)
         assert "not found" in output
+
+    def test_dry_run_swarm_method(self, tmp_path):
+        model_file = tmp_path / "model.gguf"
+        model_file.write_bytes(b"\x00" * 1024)
+
+        targets = [
+            TransferTarget(
+                host="192.168.1.100",
+                ssh_user="youruser",
+                remote_path="/models/model.gguf",
+                worker_name="desktop (4070)",
+            ),
+        ]
+        output = format_dry_run(model_file, targets, method="swarm")
+        assert "swarm" in output.lower()
+        assert "Seeder:" in output
+        assert "tightwad swarm pull" in output
+        assert "desktop (4070)" in output
+
+    def test_dry_run_swarm_with_token(self, tmp_path):
+        model_file = tmp_path / "model.gguf"
+        model_file.write_bytes(b"\x00" * 1024)
+
+        targets = [
+            TransferTarget(
+                host="192.168.1.100",
+                ssh_user="youruser",
+                remote_path="/models/model.gguf",
+                worker_name="desktop",
+            ),
+        ]
+        output = format_dry_run(model_file, targets, method="swarm", token="secret123")
+        assert "--token secret123" in output
+
+
+class TestAutoSelectMethod:
+    def test_small_file_uses_rsync(self, tmp_path):
+        small = tmp_path / "small.gguf"
+        small.write_bytes(b"\x00" * 1024)
+        assert auto_select_method(small) == "rsync"
+
+    def test_large_file_uses_swarm(self, tmp_path):
+        large = tmp_path / "large.gguf"
+        # Create a file just at the threshold
+        large.write_bytes(b"\x00" * SWARM_SIZE_THRESHOLD)
+        assert auto_select_method(large) == "swarm"
+
+    def test_nonexistent_file_uses_rsync(self):
+        assert auto_select_method(Path("/does/not/exist.gguf")) == "rsync"
+
+
+class TestSwarmPullSshCmd:
+    def test_basic_cmd(self):
+        target = TransferTarget(
+            host="192.168.1.100",
+            ssh_user="youruser",
+            remote_path="/models/model.gguf",
+            worker_name="desktop",
+        )
+        cmd = _build_swarm_pull_ssh_cmd(target, "192.168.1.1", 9080)
+        assert cmd[0] == "ssh"
+        assert "BatchMode=yes" in cmd
+        assert "youruser@192.168.1.100" in cmd
+        pull_part = cmd[-1]
+        assert "tightwad swarm pull /models/model.gguf" in pull_part
+        assert "--manifest http://192.168.1.1:9080/manifest" in pull_part
+        assert "--peer http://192.168.1.1:9080" in pull_part
+
+    def test_no_ssh_user(self):
+        target = TransferTarget(
+            host="10.0.0.5",
+            ssh_user=None,
+            remote_path="/m.gguf",
+            worker_name="test",
+        )
+        cmd = _build_swarm_pull_ssh_cmd(target, "10.0.0.1", 9080)
+        assert "10.0.0.5" in cmd
+        assert not any("@" in part for part in cmd if part != cmd[-1])
+
+    def test_with_token(self):
+        target = TransferTarget(
+            host="192.168.1.100",
+            ssh_user=None,
+            remote_path="/models/model.gguf",
+            worker_name="desktop",
+        )
+        cmd = _build_swarm_pull_ssh_cmd(target, "192.168.1.1", 9080, token="mysecret")
+        assert "--token mysecret" in cmd[-1]

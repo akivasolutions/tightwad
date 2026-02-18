@@ -728,7 +728,9 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 | `tightwad benchmark` | Benchmark the running coordinator |
 | `tightwad inspect <model.gguf>` | Show GGUF model info (arch, layers, sizes) |
 | `tightwad inspect <model.gguf> --plan` | Show distribution plan for current cluster |
-| `tightwad distribute MODEL` | Copy model to workers via rsync/scp |
+| `tightwad distribute MODEL` | Copy model to workers (auto-selects rsync or swarm by file size) |
+| `tightwad distribute MODEL --method swarm` | Force P2P swarm transfer |
+| `tightwad distribute MODEL --method rsync` | Force rsync/scp transfer |
 | `tightwad distribute MODEL --dry-run` | Preview transfers without executing |
 | `tightwad manifest create <model.gguf>` | Generate swarm manifest (piece hashes) |
 | `tightwad swarm seed <model.gguf>` | Start P2P seeder for a model |
@@ -836,7 +838,7 @@ tightwad/
 ├── speculation.py   # Verification algorithm (pure logic)
 ├── gguf_inspect.py  # GGUF model analysis + distribution planning
 ├── init_wizard.py   # LAN auto-discovery + interactive setup wizard
-├── distribute.py    # rsync/scp model to workers in parallel
+├── distribute.py    # rsync/scp or swarm P2P model distribution to workers
 ├── manifest.py      # Swarm manifest generation + bitfield tracking
 └── swarm_transfer.py # P2P seeder (Starlette) + puller (async httpx)
 scripts/

@@ -467,11 +467,17 @@ def inspect_cmd(ctx, model_path, show_plan):
 @cli.command("distribute")
 @click.argument("model_name")
 @click.option("-t", "--target", "specific_target", default=None, help="Specific target as host:/path")
+@click.option("--method", type=click.Choice(["auto", "rsync", "swarm"]), default="auto",
+              help="Transfer method (default: auto-select by file size)")
+@click.option("--token", default=None, help="Bearer token for swarm auth")
 @click.option("--dry-run", is_flag=True, help="Preview transfers without executing")
 @click.pass_context
-def distribute_cmd(ctx, model_name, specific_target, dry_run):
-    """Distribute a model to worker machines via rsync/scp."""
-    from .distribute import resolve_targets, distribute, format_dry_run
+def distribute_cmd(ctx, model_name, specific_target, method, token, dry_run):
+    """Distribute a model to worker machines via rsync/scp or swarm P2P."""
+    from .distribute import (
+        resolve_targets, distribute, distribute_swarm,
+        format_dry_run, auto_select_method,
+    )
 
     config = _load(ctx)
     try:
@@ -485,16 +491,28 @@ def distribute_cmd(ctx, model_name, specific_target, dry_run):
                        "Add model_dir to workers in config or use -t host:/path.[/yellow]")
         sys.exit(1)
 
+    # Resolve auto method
+    if method == "auto":
+        if local_path.exists():
+            method = auto_select_method(local_path)
+        else:
+            method = "rsync"  # can't check size, fall back
+        console.print(f"[dim]Auto-selected method: {method}[/dim]")
+
     if dry_run:
-        console.print(format_dry_run(local_path, targets))
+        console.print(format_dry_run(local_path, targets, method=method, token=token))
         return
 
     if not local_path.exists():
         console.print(f"[red]Model file not found: {local_path}[/red]")
         sys.exit(1)
 
-    console.print(f"[bold]Distributing {local_path.name} to {len(targets)} target(s)...[/bold]\n")
-    results = distribute(local_path, targets, console)
+    console.print(f"[bold]Distributing {local_path.name} to {len(targets)} target(s) via {method}...[/bold]\n")
+
+    if method == "swarm":
+        results = distribute_swarm(local_path, targets, console, token=token)
+    else:
+        results = distribute(local_path, targets, console)
 
     failed = [r for r in results if not r.success]
     if failed:
