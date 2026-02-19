@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tightwad.config import ClusterConfig, ProxyConfig, load_config
+from tightwad.config import ClusterConfig, ModelConfig, ProxyConfig, backend_presets, load_config
+from tightwad.coordinator import build_server_args
 
 
 @pytest.fixture
@@ -132,3 +133,150 @@ def test_proxy_section_parsed(tmp_path):
     assert config.proxy.draft.model_name == "small-model"
     assert config.proxy.target.url == "http://192.168.1.2:8080"
     assert config.proxy.target.model_name == "big-model"
+
+
+# -- Minimal ClusterConfig helper for build_server_args tests --
+
+def _minimal_config(**overrides) -> ClusterConfig:
+    defaults = dict(
+        coordinator_host="0.0.0.0",
+        coordinator_port=8080,
+        coordinator_backend="cuda",
+        coordinator_gpus=[],
+        workers=[],
+        models={},
+        coordinator_binary="llama-server",
+        rpc_server_binary="rpc-server",
+    )
+    defaults.update(overrides)
+    return ClusterConfig(**defaults)
+
+
+# -- flash_attn in build_server_args --
+
+def test_flash_attn_true_produces_on():
+    model = ModelConfig(name="m", path="/m.gguf", flash_attn=True)
+    args = build_server_args(_minimal_config(), model)
+    idx = args.index("--flash-attn")
+    assert args[idx + 1] == "on"
+
+
+def test_flash_attn_string_auto():
+    model = ModelConfig(name="m", path="/m.gguf", flash_attn="auto")
+    args = build_server_args(_minimal_config(), model)
+    idx = args.index("--flash-attn")
+    assert args[idx + 1] == "auto"
+
+
+def test_flash_attn_false_omitted():
+    model = ModelConfig(name="m", path="/m.gguf", flash_attn=False)
+    args = build_server_args(_minimal_config(), model)
+    assert "--flash-attn" not in args
+
+
+# -- extra_args passthrough --
+
+def test_extra_args_appended():
+    cfg = _minimal_config(extra_args=["--no-mmap", "--no-warmup"])
+    model = ModelConfig(name="m", path="/m.gguf", flash_attn=False)
+    args = build_server_args(cfg, model)
+    assert args[-2:] == ["--no-mmap", "--no-warmup"]
+
+
+def test_extra_args_parsed_from_yaml(tmp_path):
+    cfg = {
+        "coordinator": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "backend": "cuda",
+            "gpus": [{"name": "GPU", "vram_gb": 24}],
+            "extra_args": ["--no-mmap", "--no-warmup"],
+        },
+        "models": {"m": {"path": "/m.gguf", "default": True}},
+    }
+    p = tmp_path / "cluster.yaml"
+    p.write_text(yaml.dump(cfg))
+    config = load_config(p)
+    assert config.extra_args == ["--no-mmap", "--no-warmup"]
+
+
+# -- env passthrough --
+
+def test_env_parsed_from_yaml(tmp_path):
+    cfg = {
+        "coordinator": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "backend": "cuda",
+            "gpus": [{"name": "GPU", "vram_gb": 24}],
+            "env": {"MY_VAR": "hello"},
+        },
+        "models": {"m": {"path": "/m.gguf", "default": True}},
+    }
+    p = tmp_path / "cluster.yaml"
+    p.write_text(yaml.dump(cfg))
+    config = load_config(p)
+    assert config.env == {"MY_VAR": "hello"}
+
+
+# -- backend_presets --
+
+def test_backend_presets_hip_multi_gpu():
+    presets = backend_presets("hip", 2)
+    assert presets["env"]["HSA_ENABLE_SDMA"] == "0"
+    assert presets["env"]["GPU_MAX_HW_QUEUES"] == "1"
+
+
+def test_backend_presets_hip_single_gpu():
+    presets = backend_presets("hip", 1)
+    assert presets["env"] == {}
+
+
+def test_backend_presets_cuda_no_env():
+    presets = backend_presets("cuda", 4)
+    assert presets["env"] == {}
+
+
+def test_backend_presets_explicit_env_overrides(tmp_path):
+    """User-specified env values override backend presets."""
+    cfg = {
+        "coordinator": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "backend": "hip",
+            "gpus": [
+                {"name": "XTX 0", "vram_gb": 24},
+                {"name": "XTX 1", "vram_gb": 24},
+            ],
+            "env": {"HSA_ENABLE_SDMA": "1"},  # user override
+        },
+        "models": {"m": {"path": "/m.gguf", "default": True}},
+    }
+    p = tmp_path / "cluster.yaml"
+    p.write_text(yaml.dump(cfg))
+    config = load_config(p)
+    # User's value wins over preset
+    assert config.env["HSA_ENABLE_SDMA"] == "1"
+    # Preset still fills in GPU_MAX_HW_QUEUES
+    assert config.env["GPU_MAX_HW_QUEUES"] == "1"
+
+
+def test_backend_presets_auto_injected(tmp_path):
+    """hip + 2 GPUs auto-injects env without explicit env in YAML."""
+    cfg = {
+        "coordinator": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "backend": "hip",
+            "gpus": [
+                {"name": "XTX 0", "vram_gb": 24},
+                {"name": "XTX 1", "vram_gb": 24},
+            ],
+        },
+        "models": {"m": {"path": "/m.gguf", "default": True}},
+    }
+    p = tmp_path / "cluster.yaml"
+    p.write_text(yaml.dump(cfg))
+    config = load_config(p)
+    assert config.env["HSA_ENABLE_SDMA"] == "0"
+    assert config.env["GPU_MAX_HW_QUEUES"] == "1"

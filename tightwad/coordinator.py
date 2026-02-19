@@ -33,7 +33,8 @@ def build_server_args(config: ClusterConfig, model: ModelConfig) -> list[str]:
     ]
 
     if model.flash_attn:
-        args.append("--flash-attn")
+        val = model.flash_attn if isinstance(model.flash_attn, str) else "on"
+        args.extend(["--flash-attn", val])
 
     # RPC workers
     rpc_addrs = config.rpc_addresses
@@ -44,6 +45,9 @@ def build_server_args(config: ClusterConfig, model: ModelConfig) -> list[str]:
     split = config.tensor_split()
     if len(split) > 1:
         args.extend(["--tensor-split", ",".join(str(s) for s in split)])
+
+    # Backend-specific and user-supplied extra arguments
+    args.extend(config.extra_args)
 
     return args
 
@@ -98,12 +102,15 @@ def start(config: ClusterConfig, model_name: str | None = None) -> int:
     # the file open as long as it runs, which is intentional.  Closing the
     # parent's copy prevents FD accumulation when start() is called
     # repeatedly (e.g. during model swaps that call swap_model()).
+    run_env = {**os.environ, **config.env} if config.env else None
+
     log_fh = open(COORDINATOR_LOG, "a")
     try:
         proc = subprocess.Popen(
             args,
             stdout=log_fh,
             stderr=log_fh,
+            env=run_env,
         )
     finally:
         # Always release the parent-side reference, even if Popen fails.

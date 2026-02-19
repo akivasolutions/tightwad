@@ -40,7 +40,7 @@ class ModelConfig:
     path: str
     ctx_size: int = 8192
     predict: int = 4096
-    flash_attn: bool = True
+    flash_attn: bool | str = True  # True/False, or "on"/"off"/"auto"
     default: bool = False
 
 
@@ -112,6 +112,8 @@ class ClusterConfig:
     models: dict[str, ModelConfig]
     coordinator_binary: str
     rpc_server_binary: str
+    extra_args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
     proxy: ProxyConfig | None = None
     ram_reclaim: str = "auto"  # "off", "on", "auto"
 
@@ -145,6 +147,22 @@ class ClusterConfig:
                 return m
         # Return first model if none marked default
         return next(iter(self.models.values()), None)
+
+
+def backend_presets(backend: str, gpu_count: int) -> dict:
+    """Return known-good env vars and extra args for a backend.
+
+    Users can override any of these via explicit ``env`` and ``extra_args``
+    in their cluster.yaml coordinator section.
+    """
+    presets: dict = {"env": {}, "extra_args": []}
+
+    if backend == "hip" and gpu_count > 1:
+        # Multi-GPU ROCm: prevent SDMA hangs on most AMD boards
+        presets["env"]["HSA_ENABLE_SDMA"] = "0"
+        presets["env"]["GPU_MAX_HW_QUEUES"] = "1"
+
+    return presets
 
 
 def load_proxy_from_env() -> ProxyConfig | None:
@@ -375,15 +393,23 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         )
         ram_reclaim = "auto"
 
+    # Backend presets (env vars, extra args) merged with explicit config
+    coord_backend = coord.get("backend", "hip")
+    presets = backend_presets(coord_backend, len(coordinator_gpus))
+    merged_env = {**presets["env"], **coord.get("env", {})}
+    merged_extra = coord.get("extra_args", []) or presets.get("extra_args", [])
+
     return ClusterConfig(
         coordinator_host=coord.get("host", "0.0.0.0"),
         coordinator_port=coord.get("port", 8080),
-        coordinator_backend=coord.get("backend", "hip"),
+        coordinator_backend=coord_backend,
         coordinator_gpus=coordinator_gpus,
         workers=workers,
         models=models,
         coordinator_binary=binaries.get("coordinator", "llama-server"),
         rpc_server_binary=binaries.get("rpc_server", "rpc-server"),
+        extra_args=merged_extra,
+        env=merged_env,
         proxy=proxy,
         ram_reclaim=ram_reclaim,
     )

@@ -550,8 +550,29 @@ models:
   qwen3-32b:
     path: /models/Qwen3-32B-Q4_K_M.gguf  # ← absolute path on coordinator machine
     ctx_size: 8192
-    flash_attn: true
+    flash_attn: true              # true/false, or "on"/"off"/"auto"
     default: true
+```
+
+### Backend Presets & Passthrough
+
+Tightwad auto-injects known-good settings per backend. For example, ROCm multi-GPU setups automatically get `HSA_ENABLE_SDMA=0` and `GPU_MAX_HW_QUEUES=1` to prevent SDMA hangs — no manual configuration needed.
+
+You can override presets or add your own with `extra_args` and `env` in the coordinator section:
+
+```yaml
+coordinator:
+  backend: hip
+  gpus:
+    - name: "7900 XTX #0"
+      vram_gb: 24
+    - name: "7900 XTX #1"
+      vram_gb: 24
+  # Additional CLI args passed to llama-server
+  extra_args: ["--no-mmap", "--no-warmup"]
+  # Environment variables (override auto-injected presets)
+  env:
+    HSA_ENABLE_SDMA: "1"  # override the default preset
 ```
 
 ### Server Backends

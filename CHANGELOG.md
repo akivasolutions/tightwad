@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Example configs: minimal spec decode, CPU draft, two-GPU, mixed-vendor, combined mode (#21)
 - Documentation: quickstart guide, configuration reference, architecture overview (#22)
 - README badges: PyPI version, CI status, license, Python versions (#23)
+- **Backend presets** — auto-inject known-good environment variables per backend (e.g. `HSA_ENABLE_SDMA=0` and `GPU_MAX_HW_QUEUES=1` for ROCm multi-GPU), preventing SDMA hangs without manual configuration
+- **`extra_args` and `env` coordinator config** — passthrough fields in `cluster.yaml` for backend-specific CLI args and environment variables; user values override presets
+- **`flash_attn` string values** — `flash_attn` now accepts `"on"`, `"off"`, or `"auto"` in addition to `true`/`false`, enabling llama-server's `--flash-attn auto` mode
+
+### Fixed
+- `--flash-attn` flag now correctly passes a value argument (`--flash-attn on`) instead of a bare flag, fixing launch failures on llama-server builds that require the value
 
 ## [0.1.4] - 2026-02-18
 
