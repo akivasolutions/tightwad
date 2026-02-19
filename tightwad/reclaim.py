@@ -145,7 +145,7 @@ def get_available_ram_bytes() -> int:
     if _SYSTEM == "darwin":
         try:
             out = subprocess.check_output(
-                ["sysctl", "-n", "hw.memsize"],
+                ["/usr/sbin/sysctl", "-n", "hw.memsize"],
                 text=True,
                 stderr=subprocess.DEVNULL,
             )

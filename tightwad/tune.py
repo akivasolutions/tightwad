@@ -81,7 +81,7 @@ def _get_total_ram_bytes() -> int:
     if _SYSTEM == "darwin":
         try:
             out = subprocess.check_output(
-                ["sysctl", "-n", "hw.memsize"],
+                ["/usr/sbin/sysctl", "-n", "hw.memsize"],
                 text=True,
                 stderr=subprocess.DEVNULL,
             )
@@ -131,7 +131,7 @@ def _get_swap_info() -> tuple[float, float]:
     if _SYSTEM == "darwin":
         try:
             out = subprocess.check_output(
-                ["sysctl", "-n", "vm.swapusage"],
+                ["/usr/sbin/sysctl", "-n", "vm.swapusage"],
                 text=True,
                 stderr=subprocess.DEVNULL,
             )

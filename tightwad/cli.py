@@ -395,6 +395,8 @@ def reclaim(target_pid, model_path):
         except ProcessLookupError:
             console.print(f"[red]PID {pid} from pidfile is not running.[/red]")
             sys.exit(1)
+        except PermissionError:
+            pass  # process exists but owned by another user — proceed
 
     console.print(f"[bold]Reclaiming RAM from PID {pid}...[/bold]")
     result = reclaim_ram(pid, model_path)
