@@ -1,6 +1,6 @@
 # Tightwad
 
-[![CI](https://github.com/akivasolutions/tightwad/actions/workflows/ci.yml/badge.svg)](https://github.com/akivasolutions/tightwad/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/tightwad)](https://pypi.org/project/tightwad/) [![CI](https://github.com/akivasolutions/tightwad/actions/workflows/ci.yml/badge.svg)](https://github.com/akivasolutions/tightwad/actions) [![License](https://img.shields.io/github/license/akivasolutions/tightwad)](LICENSE) [![Python](https://img.shields.io/pypi/pyversions/tightwad)](https://pypi.org/project/tightwad/)
 
 Mixed-vendor GPU inference cluster manager with speculative decoding proxy. Pools CUDA and ROCm GPUs across machines using [llama.cpp RPC](https://github.com/ggml-org/llama.cpp/blob/master/tools/rpc), and accelerates inference via application-layer speculative decoding across network-separated servers.
 
