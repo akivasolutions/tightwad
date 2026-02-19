@@ -57,6 +57,11 @@ class ProxyConfig:
     max_draft_tokens: int = 8
     fallback_on_draft_failure: bool = True
     drafters: list[ServerEndpoint] = field(default_factory=list)
+    #: Optional Bearer token that protects all /v1/ endpoints.
+    #: When set, every request must include ``Authorization: Bearer <token>``.
+    #: When unset the proxy operates in open (unauthenticated) mode and logs
+    #: a startup warning — this preserves backward compatibility.
+    auth_token: str | None = None
 
 
 @dataclass
@@ -114,6 +119,14 @@ def load_proxy_from_env() -> ProxyConfig | None:
     if not draft_url or not target_url:
         return None
 
+    # Token may be supplied via TIGHTWAD_PROXY_TOKEN (primary) or the legacy
+    # TIGHTWAD_TOKEN alias used by the swarm seeder.
+    auth_token = (
+        os.environ.get("TIGHTWAD_PROXY_TOKEN")
+        or os.environ.get("TIGHTWAD_TOKEN")
+        or None
+    )
+
     return ProxyConfig(
         draft=ServerEndpoint(
             url=draft_url,
@@ -128,6 +141,7 @@ def load_proxy_from_env() -> ProxyConfig | None:
         host=os.environ.get("TIGHTWAD_HOST", "0.0.0.0"),
         port=int(os.environ.get("TIGHTWAD_PORT", "8088")),
         max_draft_tokens=int(os.environ.get("TIGHTWAD_MAX_DRAFT_TOKENS", "32")),
+        auth_token=auth_token,
     )
 
 
@@ -201,6 +215,17 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
                 backend=d.get("backend", "llamacpp"),
             ))
 
+        # auth_token: read from YAML, then fall back to env vars so that
+        # tokens can be injected at runtime without editing the config file.
+        yaml_token = p.get("auth_token") or None
+        env_token = (
+            os.environ.get("TIGHTWAD_PROXY_TOKEN")
+            or os.environ.get("TIGHTWAD_TOKEN")
+            or None
+        )
+        # YAML value takes precedence; env var is the fallback.
+        resolved_token = yaml_token or env_token
+
         proxy = ProxyConfig(
             draft=ServerEndpoint(url=draft["url"], model_name=draft["model_name"], backend=draft.get("backend", "llamacpp")),
             target=ServerEndpoint(url=target["url"], model_name=target["model_name"], backend=target.get("backend", "llamacpp")),
@@ -209,6 +234,7 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
             max_draft_tokens=p.get("max_draft_tokens", 8),
             fallback_on_draft_failure=p.get("fallback_on_draft_failure", True),
             drafters=drafters,
+            auth_token=resolved_token,
         )
 
     return ClusterConfig(

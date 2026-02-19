@@ -54,6 +54,10 @@ proxy:
   port: 8088
   max_draft_tokens: 32
   fallback_on_draft_failure: true
+  # Optional: require Bearer-token auth on all /v1/ endpoints.
+  # Recommended whenever the proxy is reachable beyond localhost.
+  # Set via env var: TIGHTWAD_PROXY_TOKEN=your-secret-token
+  # auth_token: "${TIGHTWAD_PROXY_TOKEN}"
   draft:
     url: http://127.0.0.1:8081
     model_name: qwen3-1.7b

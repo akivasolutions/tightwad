@@ -139,6 +139,51 @@ All `TIGHTWAD_*` env vars:
 | `TIGHTWAD_PORT` | `8088` | Proxy listen port |
 | `TIGHTWAD_HOST` | `0.0.0.0` | Proxy bind host |
 | `TIGHTWAD_MAX_DRAFT_TOKENS` | `32` | Tokens per draft round |
+| `TIGHTWAD_PROXY_TOKEN` | *(unset)* | Bearer token for proxy API auth (recommended) |
+
+### Proxy Authentication
+
+The proxy API binds to `0.0.0.0:8088` by default, making it reachable by any
+device on the LAN (or the internet if ports are forwarded). **Set a token to
+prevent unauthorized use of your GPU compute.**
+
+**Via environment variable (Docker / Docker Compose):**
+
+```bash
+docker run --rm --network host \
+  -e TIGHTWAD_DRAFT_URL=http://192.168.1.10:11434 \
+  -e TIGHTWAD_TARGET_URL=http://192.168.1.20:11434 \
+  -e TIGHTWAD_PROXY_TOKEN=my-secret-token \
+  ghcr.io/akivasolutions/tightwad
+```
+
+**Via cluster.yaml:**
+
+```yaml
+proxy:
+  host: 0.0.0.0
+  port: 8088
+  auth_token: "${TIGHTWAD_PROXY_TOKEN}"   # or paste the token directly
+  draft:
+    url: http://127.0.0.1:8081
+    model_name: qwen3-1.7b
+  target:
+    url: http://192.168.1.100:8090
+    model_name: qwen3-32b
+```
+
+**Making authenticated requests:**
+
+```bash
+curl http://localhost:8088/v1/chat/completions \
+  -H "Authorization: Bearer my-secret-token" \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+```
+
+If no token is configured the proxy operates in open (unauthenticated) mode
+for backward compatibility, but logs a **security warning** on startup.
+`TIGHTWAD_TOKEN` (the swarm seeder token) is also accepted as a fallback alias.
 
 ## Quick Start
 

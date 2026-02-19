@@ -15,9 +15,11 @@ import asyncio
 
 import httpx
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import ProxyConfig, ServerEndpoint
 from .speculation import (
@@ -30,6 +32,48 @@ from .speculation import (
 logger = logging.getLogger("tightwad.proxy")
 
 PIDFILE = Path.home() / ".tightwad" / "proxy.pid"
+
+
+class TokenAuthMiddleware:
+    """Starlette ASGI middleware that enforces Bearer-token authentication.
+
+    When a token is configured every HTTP request must include::
+
+        Authorization: Bearer <token>
+
+    Requests missing or presenting an incorrect token receive a ``401
+    Unauthorized`` response.  Non-HTTP scopes (WebSocket, lifespan) pass
+    through unchanged.
+
+    When no token is configured the middleware is a transparent no-op —
+    this preserves backward compatibility with unauthenticated deployments.
+    """
+
+    def __init__(self, app: ASGIApp, token: str | None) -> None:
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # Only enforce auth on HTTP requests; let lifespan/websocket through.
+        if scope["type"] != "http" or not self.token:
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+        auth_header = request.headers.get("authorization", "")
+        expected = f"Bearer {self.token}"
+
+        if auth_header != expected:
+            response = Response(
+                content='{"detail":"Unauthorized"}',
+                status_code=401,
+                media_type="application/json",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
 
 @dataclass
@@ -1109,6 +1153,20 @@ def create_app(config: ProxyConfig) -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app):
+        # Security check: warn loudly if the proxy is unauthenticated.
+        if not config.auth_token:
+            logger.warning(
+                "⚠️  SECURITY WARNING: No auth token configured. "
+                "The proxy API is open to anyone who can reach %s:%s. "
+                "Set TIGHTWAD_PROXY_TOKEN or add auth_token to cluster.yaml "
+                "to require Bearer-token authentication.",
+                config.host,
+                config.port,
+            )
+        else:
+            logger.info(
+                "🔐 Proxy auth enabled — Bearer token required for all API requests."
+            )
         yield
         if _proxy:
             await _proxy.close()
@@ -1123,6 +1181,11 @@ def create_app(config: ProxyConfig) -> Starlette:
             Route("/v1/tightwad/status", handle_status, methods=["GET"]),
             Route("/v1/tightwad/events", handle_events, methods=["GET"]),
             Route("/v1/tightwad/history", handle_history, methods=["GET"]),
+        ],
+        middleware=[
+            # TokenAuthMiddleware is a no-op when auth_token is None,
+            # preserving backward compatibility for unauthenticated deployments.
+            Middleware(TokenAuthMiddleware, token=config.auth_token),
         ],
         lifespan=lifespan,
     )
