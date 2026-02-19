@@ -113,6 +113,7 @@ class ClusterConfig:
     coordinator_binary: str
     rpc_server_binary: str
     proxy: ProxyConfig | None = None
+    ram_reclaim: str = "auto"  # "off", "on", "auto"
 
     @property
     def all_gpus(self) -> list[GPU]:
@@ -367,6 +368,13 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
             max_body_size=p.get("max_body_size", 10 * 1024 * 1024),
         )
 
+    ram_reclaim = raw.get("ram_reclaim", "auto")
+    if ram_reclaim not in ("off", "on", "auto"):
+        logger.warning(
+            "Invalid ram_reclaim value %r, defaulting to 'auto'", ram_reclaim
+        )
+        ram_reclaim = "auto"
+
     return ClusterConfig(
         coordinator_host=coord.get("host", "0.0.0.0"),
         coordinator_port=coord.get("port", 8080),
@@ -377,4 +385,5 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         coordinator_binary=binaries.get("coordinator", "llama-server"),
         rpc_server_binary=binaries.get("rpc_server", "rpc-server"),
         proxy=proxy,
+        ram_reclaim=ram_reclaim,
     )

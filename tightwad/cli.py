@@ -127,8 +127,10 @@ def init(subnet, extra_ports, output, draft_url, draft_model, draft_backend,
 
 @cli.command()
 @click.option("-m", "--model", default=None, help="Model name from config")
+@click.option("--ram-reclaim", type=click.Choice(["off", "on", "auto"]), default=None,
+              help="RAM reclaim mode (default: from config, usually 'auto')")
 @click.pass_context
-def start(ctx, model):
+def start(ctx, model, ram_reclaim):
     """Start the coordinator llama-server with RPC workers."""
     config = _load(ctx)
 
@@ -158,10 +160,30 @@ def start(ctx, model):
     console.print(f"  Tensor split: {config.tensor_split()}")
     console.print(f"  Total VRAM: {config.total_vram_gb} GB across {len(config.all_gpus)} GPUs")
 
+    mode = ram_reclaim or config.ram_reclaim
+
     try:
-        pid = coordinator.start(config, model)
-        console.print(f"\n[green bold]Coordinator started (PID {pid})[/green bold]")
-        console.print(f"  API: http://localhost:{config.coordinator_port}/v1")
+        if mode == "off":
+            pid = coordinator.start(config, model)
+            console.print(f"\n[green bold]Coordinator started (PID {pid})[/green bold]")
+            console.print(f"  API: http://localhost:{config.coordinator_port}/v1")
+        else:
+            console.print(f"  RAM reclaim: {mode}")
+            pid, result = coordinator.start_and_reclaim(
+                config, model, ram_reclaim=mode,
+            )
+            console.print(f"\n[green bold]Coordinator started (PID {pid})[/green bold]")
+            console.print(f"  API: http://localhost:{config.coordinator_port}/v1")
+            if result:
+                if result.method == "skipped":
+                    console.print(f"  RAM reclaim: skipped ({result.error or 'not needed'})")
+                else:
+                    console.print(
+                        f"  [green]Reclaimed {result.reclaimed_mb:,.0f} MB RAM "
+                        f"({result.method})[/green]"
+                    )
+            elif mode == "auto":
+                console.print("  RAM reclaim: skipped (sufficient RAM)")
     except RuntimeError as e:
         console.print(f"\n[red]{e}[/red]")
         sys.exit(1)
@@ -340,6 +362,96 @@ def doctor(ctx, fix, as_json):
 
     if not report.passed:
         sys.exit(1)
+
+
+@cli.command()
+@click.option("--pid", "target_pid", type=int, default=None,
+              help="PID of llama-server process (auto-detected from pidfile)")
+@click.option("--model-path", type=click.Path(), default=None,
+              help="Path to GGUF model file (auto-detected on Linux)")
+def reclaim(target_pid, model_path):
+    """Reclaim RAM from a running llama-server after model loading.
+
+    Tells the OS to release file-backed pages from a llama-server process.
+    On Linux uses posix_fadvise(DONTNEED), on Windows trims the working set.
+    On macOS this is a no-op (unified memory).
+
+    The coordinator PID is auto-detected from the pidfile if --pid is not given.
+    On Linux, the model path is auto-detected from /proc/{pid}/maps.
+    """
+    from .reclaim import reclaim_ram
+    from .coordinator import PIDFILE
+
+    pid = target_pid
+    if pid is None:
+        if not PIDFILE.exists():
+            console.print("[red]No coordinator running and no --pid specified.[/red]")
+            console.print("Start the coordinator first, or provide --pid.")
+            sys.exit(1)
+        pid = int(PIDFILE.read_text().strip())
+        # Verify it's alive
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            console.print(f"[red]PID {pid} from pidfile is not running.[/red]")
+            sys.exit(1)
+
+    console.print(f"[bold]Reclaiming RAM from PID {pid}...[/bold]")
+    result = reclaim_ram(pid, model_path)
+
+    if result.method == "skipped":
+        msg = result.error or "not applicable on this platform"
+        console.print(f"  RAM reclaim: [yellow]skipped[/yellow] ({msg})")
+    else:
+        console.print(f"  RSS before: {result.rss_before_mb:,.1f} MB")
+        console.print(f"  RSS after:  {result.rss_after_mb:,.1f} MB")
+        console.print(
+            f"  [green]Reclaimed {result.reclaimed_mb:,.0f} MB "
+            f"({result.method})[/green]"
+        )
+
+
+@cli.command()
+@click.option("--model", "model_path", type=click.Path(exists=True), default=None,
+              help="Model file to check RAM sufficiency against")
+def tune(model_path):
+    """Diagnose system RAM/swap and recommend tuning for large models."""
+    from .tune import diagnose, recommend
+
+    info = diagnose()
+
+    console.print("[bold]System Resources:[/bold]")
+    console.print(f"  RAM:        {info.total_ram_gb:.1f} GB ({info.available_ram_gb:.1f} GB available)")
+    console.print(f"  Swap:       {info.swap_total_gb:.1f} GB ({info.swap_used_gb:.1f} GB used)")
+    if info.vm_swappiness is not None:
+        console.print(f"  Swappiness: {info.vm_swappiness}")
+    if info.swap_on_nvme is not None:
+        nvme_str = "[green]yes[/green]" if info.swap_on_nvme else "[yellow]no[/yellow]"
+        console.print(f"  Swap NVMe:  {nvme_str}")
+
+    model_size_gb = None
+    if model_path:
+        model_size = Path(model_path).stat().st_size
+        model_size_gb = model_size / (1024**3)
+        console.print(f"\n[bold]Model:[/bold] {Path(model_path).name} ({model_size_gb:.1f} GB)")
+
+    recs = recommend(info, model_size_gb)
+    console.print()
+
+    severity_icons = {
+        "critical": "[red bold][!] CRITICAL:[/red bold]",
+        "warn": "[yellow][!] WARNING:[/yellow]",
+        "info": "[dim][i][/dim]",
+    }
+
+    for rec in recs:
+        icon = severity_icons.get(rec.severity, "[dim][i][/dim]")
+        console.print(f"  {icon} {rec.message}")
+        if rec.commands:
+            console.print()
+            for cmd in rec.commands:
+                console.print(f"      {cmd}")
+            console.print()
 
 
 # --- Proxy subcommand group ---

@@ -806,6 +806,73 @@ If you have two or more machines — mixed vendors, mixed GPU generations, mixed
 
 That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with no GPU? CPU drafting. Your gaming PC, your workstation, your NAS, your laptop — Tightwad doesn't judge what you have. It just pools it.
 
+## RAM Management
+
+llama-server mmaps the entire GGUF file into RAM before copying tensors to VRAM. On Windows, pages stay resident forever. On Linux, pages linger in the page cache. This means a 16 GB RAM machine can't load an 18 GB model even if the GPU has 24 GB VRAM.
+
+Tightwad solves this with two commands:
+
+### `tightwad reclaim` — Free RAM After Loading
+
+After the model is fully loaded to VRAM (`/health` returns 200), tell the OS to release the file's page cache:
+
+```bash
+# Auto-reclaim after starting coordinator
+tightwad start -m qwen3-32b --ram-reclaim on
+
+# Or reclaim manually for any running llama-server
+tightwad reclaim                        # auto-detects coordinator PID
+tightwad reclaim --pid 12345            # any llama-server process
+tightwad reclaim --pid 12345 --model-path /models/model.gguf
+```
+
+**How it works per platform:**
+
+| Platform | Method | Effect |
+|----------|--------|--------|
+| Linux | `posix_fadvise(DONTNEED)` | Drops the GGUF file's page cache. Targeted — only affects that file. |
+| Windows | `SetProcessWorkingSetSize(-1, -1)` | Trims working set, moves mmap'd pages to standby list. |
+| macOS | No-op | Unified memory — GPU and CPU share physical RAM. Reclaim is unnecessary. |
+
+**`ram_reclaim` modes** (in `cluster.yaml` or `--ram-reclaim` flag):
+
+| Mode | Behavior |
+|------|----------|
+| `off` | Default llama-server behavior. No reclaim. |
+| `on` | Always reclaim after model loads to VRAM. |
+| `auto` | Reclaim if model > 50% of available RAM. Skip if plenty of headroom. (Default) |
+
+### `tightwad tune` — System Readiness Check
+
+For machines where the model is bigger than RAM, NVMe swap must be configured:
+
+```bash
+tightwad tune                              # general system check
+tightwad tune --model /models/qwen3-32b.gguf  # check against specific model
+```
+
+Example output on a 16 GB machine with no swap:
+
+```
+System Resources:
+  RAM:        16.0 GB (12.3 GB available)
+  Swap:       0.0 GB (0.0 GB used)
+  Swappiness: 60
+
+Model: qwen3-32b-Q4_K_M.gguf (18.1 GB)
+
+  [!] CRITICAL: No swap configured. This model (18.1 GB) exceeds available
+      RAM (12.3 GB). Loading will fail. Configure NVMe swap:
+
+      sudo fallocate -l 32G /swapfile
+      sudo chmod 600 /swapfile
+      sudo mkswap /swapfile
+      sudo swapon /swapfile
+      echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+  [i] Tip: After loading, run 'tightwad reclaim' to free RAM.
+```
+
 ## CLI Reference
 
 | Command | Description |
@@ -826,6 +893,11 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 | `tightwad doctor` | Diagnose config, connectivity, binaries, versions, and config validation |
 | `tightwad doctor --fix` | Show suggested fix commands for failures/warnings |
 | `tightwad doctor --json` | Machine-readable JSON diagnostic report |
+| `tightwad start --ram-reclaim auto` | Start coordinator with RAM reclaim (off/on/auto) |
+| `tightwad reclaim` | Reclaim RAM from running coordinator after model loads to VRAM |
+| `tightwad reclaim --pid PID` | Reclaim RAM from any llama-server process |
+| `tightwad tune` | Diagnose system RAM/swap readiness for large models |
+| `tightwad tune --model <model.gguf>` | Check if system can handle a specific model |
 | `tightwad benchmark` | Benchmark the running coordinator |
 | `tightwad inspect <model.gguf>` | Show GGUF model info (arch, layers, sizes) |
 | `tightwad inspect <model.gguf> --plan` | Show distribution plan for current cluster |
@@ -942,6 +1014,8 @@ tightwad/
 ├── cli.py           # Click CLI (cluster + proxy + inspect + distribute + doctor + logs)
 ├── doctor.py        # Diagnostic checks (config, binaries, network, versions)
 ├── coordinator.py   # llama-server lifecycle management
+├── reclaim.py       # Cross-platform RAM reclaim after model loading
+├── tune.py          # System RAM/swap diagnostics and tuning recommendations
 ├── worker.py        # RPC worker health checks
 ├── proxy.py         # Speculative decoding proxy server
 ├── dashboard.py     # Live web dashboard (SSE, charts, request log)
@@ -961,6 +1035,8 @@ benchmarks/                 # Benchmark result JSON files
 tests/
 ├── test_config.py
 ├── test_coordinator.py
+├── test_reclaim.py
+├── test_tune.py
 ├── test_speculation.py
 ├── test_proxy.py
 ├── test_ssrf.py        # SSRF protection: scheme checks, IP blocklist, DNS-rebinding, config integration

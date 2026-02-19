@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: quickstart guide, configuration reference, architecture overview (#22)
 - README badges: PyPI version, CI status, license, Python versions (#23)
 
+## [0.1.3] - 2026-02-18
+
+### Added
+- **`tightwad reclaim` command** — free RAM after model loads to VRAM. Cross-platform: `posix_fadvise(DONTNEED)` on Linux, `SetProcessWorkingSetSize` on Windows, no-op on macOS (unified memory)
+- **`tightwad tune` command** — diagnose system RAM/swap readiness for large models with platform-specific fix commands
+- **`--ram-reclaim` flag on `tightwad start`** — modes: `off`, `on`, `auto` (default). Auto reclaims if model > 50% of available RAM
+- `ram_reclaim` config option in cluster.yaml (top-level, defaults to `auto`)
+- `start_and_reclaim()` coordinator function — waits for `/health` 200 before reclaiming (prevents evicting pages the server still needs)
+- Auto-detection of model path from `/proc/{pid}/maps` on Linux
+- Auto-detection of coordinator PID from pidfile for `tightwad reclaim`
+- Cross-platform RSS and available RAM reading without psutil dependency
+
 ## [0.1.2] - 2026-02-18
 
 ### Added
@@ -63,7 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for CUDA, ROCm, and CPU backends
 - OpenAI-compatible API endpoint
 
-[Unreleased]: https://github.com/akivasolutions/tightwad/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/akivasolutions/tightwad/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/akivasolutions/tightwad/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/akivasolutions/tightwad/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/akivasolutions/tightwad/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/akivasolutions/tightwad/releases/tag/v0.1.0
