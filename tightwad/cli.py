@@ -565,6 +565,7 @@ def load_cmd(ctx, model_path, mem_limit, no_prewarm, ram_reclaim, timeout):
     try:
         result = load_model(
             config,
+            model_name=str(model_path),
             prewarm=False,  # already pre-warmed above
             ram_reclaim=mode,
             wait_timeout=timeout,

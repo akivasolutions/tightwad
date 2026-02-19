@@ -199,7 +199,7 @@ def start_and_reclaim(
     -------
     (pid, ReclaimResult or None)
     """
-    from .reclaim import reclaim_ram, should_reclaim, get_available_ram_bytes
+    from .reclaim import reclaim_ram, should_reclaim, get_available_ram_bytes, get_swap_free_bytes
 
     mode = ram_reclaim or config.ram_reclaim
 
@@ -222,7 +222,8 @@ def start_and_reclaim(
         if model_file_size > 0:
             from .loader import needs_streaming_load, load_model
             available = get_available_ram_bytes()
-            if needs_streaming_load(model_file_size, available):
+            swap_free = get_swap_free_bytes()
+            if needs_streaming_load(model_file_size, available, swap_free_bytes=swap_free):
                 # Model won't fit comfortably — pre-warm + start + reclaim
                 result = load_model(
                     config, model_name, ram_reclaim=mode,

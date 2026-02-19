@@ -173,6 +173,64 @@ def get_available_ram_bytes() -> int:
     return 0
 
 
+def get_swap_free_bytes() -> int:
+    """Get free swap space in bytes. Cross-platform."""
+    if _SYSTEM == "linux":
+        try:
+            meminfo = Path("/proc/meminfo").read_text()
+            for line in meminfo.splitlines():
+                if line.startswith("SwapFree:"):
+                    kb = int(line.split()[1])
+                    return kb * 1024
+        except (FileNotFoundError, ValueError):
+            pass
+        return 0
+
+    if _SYSTEM == "windows":
+        try:
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            mem = MEMORYSTATUSEX()
+            mem.dwLength = ctypes.sizeof(mem)
+            if kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
+                # PageFile includes both RAM and swap; subtract physical to get swap-only
+                return max(0, mem.ullAvailPageFile - mem.ullAvailPhys)
+        except Exception:
+            pass
+        return 0
+
+    if _SYSTEM == "darwin":
+        try:
+            import re
+            out = subprocess.check_output(
+                ["sysctl", "-n", "vm.swapusage"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+            # Format: "total = 2048.00M  used = 512.00M  free = 1536.00M  ..."
+            m = re.search(r"free\s*=\s*([\d.]+)M", out)
+            if m:
+                return int(float(m.group(1)) * 1024 * 1024)
+        except Exception:
+            pass
+        return 0
+
+    return 0
+
+
 def should_reclaim(model_size_bytes: int) -> bool:
     """Auto-detect: returns True if model > 50% of available RAM."""
     available = get_available_ram_bytes()
