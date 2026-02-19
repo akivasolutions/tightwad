@@ -75,7 +75,7 @@ Combine GPUs from different machines and vendors into a single OpenAI-compatible
 
 ```
 ANY junk hardware (P400 2GB, GTX 770, laptop CPU, Raspberry Pi)
-    │ runs Qwen3-1.7B, drafts 32 tokens (~30 tok/s)
+    │ runs a small 1-2B draft model (~30 tok/s)
     │ sends token IDs (bytes, not megabytes)
     ▼
 Tightwad Proxy (:8088)
@@ -88,7 +88,7 @@ RPC GPU Pool (any mix: CUDA + ROCm + Metal, running 70B)
 5+ tok/s instead of 3 tok/s — and the 70B model fits nowhere else
 ```
 
-> The draft model needs: (1) same model family as the target, (2) llamacpp backend (not Ollama) for prompt-append verification, (3) any hardware that can run a 1.7B model. That's it.
+> The draft model needs: (1) same model family as the target, (2) llamacpp backend (not Ollama) for prompt-append verification, (3) any hardware that can run a 1-2B model. That's it.
 
 ```
 Client (OpenAI API)
@@ -705,9 +705,9 @@ RPC pooling is only useful when the model doesn't fit on one machine. When it do
 - **Models too big for one machine:** Pool GPUs via RPC, then speculate on top — the draft model turns 3 tok/s into 5+ tok/s. A 70B model across 4 consumer GPUs becomes usable
 - **Local multi-GPU:** Draft on a consumer GPU ($200), verify on a larger GPU/rig
 - **Cloud cost reduction:** Draft locally, verify via cloud API — fewer API calls for the same output quality
-- **CPU draft, GPU verify:** Run a tiny model (0.6B-1.7B) on CPU/RAM, verify on GPU. Turns every idle CPU into usable inference compute
+- **CPU draft, GPU verify:** Run a tiny model (0.6B-2B) on CPU/RAM, verify on GPU. Turns every idle CPU into usable inference compute
 - **Multi-drafter parallelism:** Multiple CPUs each run a draft model in parallel, the GPU target picks the best candidate
-- **Legacy GPU revival:** A 12-year-old GPU with 2GB VRAM can run Qwen3-1.7B as a draft model for a 72B target — turning e-waste into productive infrastructure
+- **Legacy GPU revival:** A 12-year-old GPU with 2GB VRAM can run a 1-2B draft model for a 70B+ target — turning e-waste into productive infrastructure
 - **Junk drawer inference:** Pool ALL your hardware — CUDA, ROCm, Metal, CPU — into one endpoint. The speculative proxy handles the coordination. No GPU left behind
 
 ## Swarm Transfer — P2P Model Distribution
