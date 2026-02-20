@@ -550,7 +550,7 @@ models:
   qwen3-32b:
     path: /models/Qwen3-32B-Q4_K_M.gguf  # ← absolute path on coordinator machine
     ctx_size: 8192
-    flash_attn: true              # true/false, or "on"/"off"/"auto"
+    flash_attn: true              # boolean (legacy string values "on"/"off" also accepted)
     default: true
 ```
 
@@ -932,6 +932,14 @@ Model: qwen3-32b-Q4_K_M.gguf (18.1 GB)
 | `tightwad reclaim --pid PID` | Reclaim RAM from any llama-server process |
 | `tightwad load <model.gguf>` | Pre-warm + load GGUF with memory-aware startup |
 | `tightwad load <model.gguf> --no-prewarm` | Load without sequential pre-warming |
+| `tightwad init --local` | Auto-detect local GPUs and generate a coordinator-only config |
+| `tightwad pull <model_spec>` | Download GGUF models from HuggingFace with resume support |
+| `tightwad pull --list` | List available models in the curated registry |
+| `tightwad service install` | Install tightwad as a system service (systemd/launchd) |
+| `tightwad service uninstall` | Uninstall the system service |
+| `tightwad service status` | Check if the system service is installed and running |
+| `tightwad deploy <host>` | Deploy tightwad to a remote host via SSH |
+| `tightwad deploy <host> --ssh-user USER` | Deploy with a specific SSH username |
 | `tightwad tune` | Diagnose system RAM/swap readiness for large models |
 | `tightwad tune --model <model.gguf>` | Check if system can handle a specific model |
 | `tightwad benchmark` | Benchmark the running coordinator |
@@ -948,7 +956,7 @@ Model: qwen3-32b-Q4_K_M.gguf (18.1 GB)
 | `tightwad swarm pull --token T` | Pull with Bearer auth for authenticated seeders |
 | `tightwad swarm status <model.gguf>` | Show swarm completion status |
 
-Global option: `-c /path/to/cluster.yaml` or `TIGHTWAD_CONFIG` env var.
+Global option: `-c /path/to/cluster.yaml` or `TIGHTWAD_CONFIG` env var. Config is auto-discovered from `./tightwad.yaml`, `./configs/cluster.yaml`, `~/.tightwad/config.yaml`, or the package default if `-c` is not provided.
 
 `tightwad inspect` requires the `gguf` package: `pip install tightwad[inspect]`
 
@@ -964,6 +972,7 @@ Global option: `-c /path/to/cluster.yaml` or `TIGHTWAD_CONFIG` env var.
 | `/v1/tightwad/status` | GET | Proxy stats: acceptance rate, rounds, throughput |
 | `/v1/tightwad/events` | GET | SSE stream of live stats, health, and request events |
 | `/v1/tightwad/history` | GET | JSON array of recent request records (max 50) |
+| `/metrics` | GET | Prometheus text exposition format (requests, tokens, acceptance rate, uptime) |
 
 All endpoints support `stream: true` for SSE streaming. The chat UI at `/` provides an instant browser-based interface with streaming — no additional software required.
 
@@ -1055,11 +1064,15 @@ tightwad/
 ├── gguf_reader.py   # Pure-Python GGUF v2/v3 binary parser (no gguf dependency)
 ├── tune.py          # System RAM/swap diagnostics and tuning recommendations
 ├── worker.py        # RPC worker health checks
-├── proxy.py         # Speculative decoding proxy server
+├── proxy.py         # Speculative decoding proxy server (+ /metrics Prometheus endpoint)
 ├── dashboard.py     # Live web dashboard (SSE, charts, request log)
 ├── speculation.py   # Verification algorithm (pure logic)
 ├── gguf_inspect.py  # GGUF model analysis + distribution planning
 ├── init_wizard.py   # LAN auto-discovery + interactive setup wizard
+├── gpu_detect.py    # GPU auto-detection (NVIDIA, AMD ROCm, Apple Metal)
+├── service.py       # System service management (systemd + launchd)
+├── model_hub.py     # Model registry + HuggingFace GGUF downloader
+├── deploy.py        # Remote deployment via SSH (install + start + verify)
 ├── distribute.py    # rsync/scp or swarm P2P model distribution to workers
 ├── manifest.py      # Swarm manifest generation + bitfield tracking
 └── swarm_transfer.py # P2P seeder (Starlette) + puller (async httpx)
@@ -1084,7 +1097,11 @@ tests/
 ├── test_distribute.py
 ├── test_doctor.py
 ├── test_swarm.py
-└── test_init_wizard.py
+├── test_init_wizard.py
+├── test_gpu_detect.py
+├── test_service.py
+├── test_model_hub.py
+└── test_deploy.py
 configs/
 ├── cluster.yaml              # Hardware topology + proxy config
 └── cluster-unraid-coord.yaml # Unraid coordinator (128GB RAM, 70B+ models)

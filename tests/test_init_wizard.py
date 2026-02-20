@@ -17,6 +17,7 @@ from tightwad.init_wizard import (
     DiscoveredServer,
     detect_backend,
     generate_cluster_yaml,
+    generate_local_yaml,
     identify_server,
 )
 
@@ -291,6 +292,63 @@ def test_yes_flag_overwrites(tmp_path):
     assert result.exit_code == 0, result.output
     assert "old content" not in output.read_text()
     assert "proxy" in output.read_text()
+
+
+# --- Local mode ---
+
+
+def test_generate_local_yaml_single_gpu():
+    """generate_local_yaml produces valid YAML with GPU info."""
+    from tightwad.gpu_detect import DetectedGPU
+
+    gpus = [DetectedGPU(name="RTX 4070", vram_mb=16384, backend="cuda")]
+    yaml_str = generate_local_yaml(gpus, binary="/usr/local/bin/llama-server", model_path="/models/test.gguf")
+
+    import yaml as _yaml
+    data = _yaml.safe_load(yaml_str)
+
+    assert data["coordinator"]["backend"] == "cuda"
+    assert data["coordinator"]["gpus"][0]["name"] == "RTX 4070"
+    assert data["coordinator"]["gpus"][0]["vram_gb"] == 16
+    assert data["models"]["default"]["path"] == "/models/test.gguf"
+    assert data["binaries"]["coordinator"] == "/usr/local/bin/llama-server"
+
+
+def test_generate_local_yaml_no_model():
+    """generate_local_yaml with no model_path produces empty models dict."""
+    from tightwad.gpu_detect import DetectedGPU
+
+    gpus = [DetectedGPU(name="Apple M4", vram_mb=16384, backend="metal")]
+    yaml_str = generate_local_yaml(gpus, binary=None)
+
+    import yaml as _yaml
+    data = _yaml.safe_load(yaml_str)
+
+    assert data["models"] == {}
+    assert "binaries" not in data
+
+
+def test_local_init_cli(tmp_path):
+    """--local flag generates coordinator-only config."""
+    from tightwad.gpu_detect import DetectedGPU
+
+    output = tmp_path / "cluster.yaml"
+    runner = CliRunner()
+
+    fake_gpus = [DetectedGPU(name="RTX 4070", vram_mb=16384, backend="cuda")]
+    with patch("tightwad.cli.detect_gpus", return_value=fake_gpus) if False else \
+         patch("tightwad.gpu_detect.detect_gpus", return_value=fake_gpus), \
+         patch("tightwad.gpu_detect.detect_binary", return_value="/usr/bin/llama-server"):
+        result = runner.invoke(cli, [
+            "init", "--local",
+            "--model-path", "/models/test.gguf",
+            "-o", str(output),
+            "-y",
+        ])
+
+    assert result.exit_code == 0, result.output
+    assert output.exists()
+    assert "cuda" in output.read_text()
 
 
 def test_no_yes_flag_existing_file_errors(tmp_path):

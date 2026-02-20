@@ -16,10 +16,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README badges: PyPI version, CI status, license, Python versions (#23)
 - **Backend presets** — auto-inject known-good environment variables per backend (e.g. `HSA_ENABLE_SDMA=0` and `GPU_MAX_HW_QUEUES=1` for ROCm multi-GPU), preventing SDMA hangs without manual configuration
 - **`extra_args` and `env` coordinator config** — passthrough fields in `cluster.yaml` for backend-specific CLI args and environment variables; user values override presets
-- **`flash_attn` string values** — `flash_attn` now accepts `"on"`, `"off"`, or `"auto"` in addition to `true`/`false`, enabling llama-server's `--flash-attn auto` mode
+
+## [0.3.0] - 2026-02-19
+
+### Added
+- **JSON pidfile metadata** — coordinator PID file now stores JSON with pid, port, config path, model name, and start timestamp. Backward compatible with legacy plain-int format. Enables `tightwad status` without `-c` flag
+- **`tightwad deploy <host>`** — deploy tightwad to a remote host via SSH: checks connectivity, verifies python3, installs via pip, copies config, starts tightwad, and verifies health endpoint
+- **Prometheus `/metrics` endpoint** — text/plain Prometheus exposition format with metrics: `tightwad_requests_total`, `tightwad_tokens_generated_total`, `tightwad_tokens_drafted_total`, `tightwad_tokens_accepted_total`, `tightwad_speculation_acceptance_rate`, `tightwad_speculation_rounds_total`, `tightwad_uptime_seconds`, `tightwad_bonus_tokens_total`, `tightwad_resampled_total`
+
+## [0.2.1] - 2026-02-19
+
+### Added
+- **`tightwad pull`** — download GGUF models from HuggingFace with resume support, progress bar, and GGUF validation. Includes curated model registry with short specs (e.g. `llama3.3:70b-q4_k_m`, `qwen3:32b-q4_k_m`) and supports direct URLs and HF repo paths
+- `tightwad pull --list` — show all available models in the curated registry
+
+## [0.2.0] - 2026-02-19
+
+### Added
+- **GPU auto-detection** (`tightwad/gpu_detect.py`) — auto-detect NVIDIA (via nvidia-smi), AMD (via rocm-smi), and Apple Silicon (via system_profiler) GPUs with VRAM, backend, and device index
+- **`tightwad init --local`** — one-command setup: detect local GPUs, find llama-server binary, generate a coordinator-only config YAML. Supports `--model-path` and `--port` options
+- **`tightwad service install/uninstall/status`** — install tightwad as a persistent system service (systemd on Linux, launchd on macOS) with auto-restart on failure
+- `detect_binary()` — searches PATH and common build locations for llama-server
+
+## [0.1.5] - 2026-02-19
 
 ### Fixed
-- `--flash-attn` flag now correctly passes a value argument (`--flash-attn on`) instead of a bare flag, fixing launch failures on llama-server builds that require the value
+- **`--flash-attn` bare flag** — llama-server expects `--flash-attn` as a bare flag, not `--flash-attn on`. The spurious `"on"` argument was silently ignored, meaning flash attention was never actually enabled. This caused a ~10% generation speed regression on ROCm setups
+- **posix_fadvise error reporting** — errno codes (EINVAL, EBADF, ESPIPE) are now mapped to human-readable messages. Failed reclaim is reported as "failed" (yellow) distinct from "skipped" (dimmed), logged at debug instead of warning level
+- **`flash_attn` type coercion** — `ModelConfig.flash_attn` is now strictly `bool`. Legacy YAML string values (`"on"`, `"off"`, `"auto"`) are coerced to boolean during config loading for backward compatibility
+
+### Added
+- **Config auto-discovery** — tightwad now searches `./tightwad.yaml`, `./configs/cluster.yaml`, `~/.tightwad/config.yaml`, and the package default before requiring an explicit `-c` flag. `FileNotFoundError` now lists all searched paths and suggests `tightwad init`
+- Friendly quick-start guide printed on config-not-found errors instead of a raw traceback
 
 ## [0.1.4] - 2026-02-18
 
@@ -93,7 +121,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for CUDA, ROCm, and CPU backends
 - OpenAI-compatible API endpoint
 
-[Unreleased]: https://github.com/akivasolutions/tightwad/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/akivasolutions/tightwad/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/akivasolutions/tightwad/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/akivasolutions/tightwad/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/akivasolutions/tightwad/compare/v0.1.5...v0.2.0
+[0.1.5]: https://github.com/akivasolutions/tightwad/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/akivasolutions/tightwad/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/akivasolutions/tightwad/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/akivasolutions/tightwad/compare/v0.1.1...v0.1.2

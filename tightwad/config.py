@@ -40,7 +40,7 @@ class ModelConfig:
     path: str
     ctx_size: int = 8192
     predict: int = 4096
-    flash_attn: bool | str = True  # True/False, or "on"/"off"/"auto"
+    flash_attn: bool = True
     default: bool = False
 
 
@@ -274,11 +274,65 @@ def _validate_proxy_urls(
         logger.debug("ssrf: %s URL %r validated OK (allow_private=%s)", label, url, allow_private)
 
 
+def _resolve_config_path(explicit: str | Path | None = None) -> Path:
+    """Search for config file in standard locations.
+
+    Search order:
+    1. Explicit path (``-c`` flag)
+    2. ``TIGHTWAD_CONFIG`` environment variable
+    3. ``./tightwad.yaml`` (current working directory)
+    4. ``./configs/cluster.yaml`` (project convention)
+    5. ``~/.tightwad/config.yaml`` (user config)
+    6. Package-bundled ``DEFAULT_CONFIG``
+    """
+    if explicit is not None:
+        return Path(explicit)
+
+    env_path = os.environ.get("TIGHTWAD_CONFIG")
+    if env_path:
+        return Path(env_path)
+
+    candidates = [
+        Path.cwd() / "tightwad.yaml",
+        Path.cwd() / "configs" / "cluster.yaml",
+        Path.home() / ".tightwad" / "config.yaml",
+        DEFAULT_CONFIG,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            logger.debug("Auto-discovered config: %s", candidate)
+            return candidate
+
+    searched = "\n  ".join(str(c) for c in candidates)
+    raise FileNotFoundError(
+        f"No tightwad config found. Searched:\n  {searched}\n\n"
+        "Quick start:\n"
+        "  tightwad init --local          # auto-detect GPUs and generate config\n"
+        "  tightwad init --draft-url ...   # non-interactive proxy config\n"
+        "  tightwad -c /path/to/config.yaml start"
+    )
+
+
 def load_config(path: str | Path | None = None) -> ClusterConfig:
     """Load cluster config from YAML file, falling back to env vars for proxy-only mode."""
-    config_path = Path(path) if path else Path(
-        os.environ.get("TIGHTWAD_CONFIG", DEFAULT_CONFIG)
-    )
+    try:
+        config_path = _resolve_config_path(path)
+    except FileNotFoundError:
+        # Before raising, check env vars for proxy-only mode
+        proxy = load_proxy_from_env()
+        if proxy is not None:
+            return ClusterConfig(
+                coordinator_host="0.0.0.0",
+                coordinator_port=8080,
+                coordinator_backend="cuda",
+                coordinator_gpus=[],
+                workers=[],
+                models={},
+                coordinator_binary="llama-server",
+                rpc_server_binary="rpc-server",
+                proxy=proxy,
+            )
+        raise
 
     if not config_path.exists():
         proxy = load_proxy_from_env()
@@ -325,7 +379,7 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
             path=m["path"],
             ctx_size=m.get("ctx_size", 8192),
             predict=m.get("predict", 4096),
-            flash_attn=m.get("flash_attn", True),
+            flash_attn=m.get("flash_attn", True) not in (False, "off", "false", "no", 0),
             default=m.get("default", False),
         )
 

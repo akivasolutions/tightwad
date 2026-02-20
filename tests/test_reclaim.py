@@ -133,3 +133,36 @@ def test_reclaim_linux_no_model_path():
          patch("tightwad.reclaim.detect_model_path_from_proc", return_value=None):
         result = reclaim_ram(os.getpid())
         assert result.method == "skipped"
+
+
+def test_reclaim_linux_fadvise_einval():
+    """posix_fadvise returning EINVAL (22) should report method='failed' with human message."""
+    from tightwad.reclaim import _reclaim_linux
+    with patch("tightwad.reclaim._SYSTEM", "linux"), \
+         patch("tightwad.reclaim.detect_model_path_from_proc", return_value="/models/test.gguf"):
+        # Mock ctypes and os to simulate fadvise returning 22
+        mock_libc = MagicMock()
+        mock_libc.posix_fadvise.return_value = 22
+        with patch("tightwad.reclaim.ctypes.CDLL", return_value=mock_libc), \
+             patch("tightwad.reclaim.os.open", return_value=3), \
+             patch("tightwad.reclaim.os.fstat") as mock_fstat, \
+             patch("tightwad.reclaim.os.close"):
+            mock_fstat.return_value = MagicMock(st_size=1024)
+            method, error = _reclaim_linux(1234, None)
+            assert method == "failed"
+            assert "EINVAL" in error
+
+
+def test_reclaim_linux_fadvise_success():
+    """posix_fadvise returning 0 should report method='posix_fadvise' with no error."""
+    from tightwad.reclaim import _reclaim_linux
+    mock_libc = MagicMock()
+    mock_libc.posix_fadvise.return_value = 0
+    with patch("tightwad.reclaim.ctypes.CDLL", return_value=mock_libc), \
+         patch("tightwad.reclaim.os.open", return_value=3), \
+         patch("tightwad.reclaim.os.fstat") as mock_fstat, \
+         patch("tightwad.reclaim.os.close"):
+        mock_fstat.return_value = MagicMock(st_size=1024)
+        method, error = _reclaim_linux(1234, "/models/test.gguf")
+        assert method == "posix_fadvise"
+        assert error is None

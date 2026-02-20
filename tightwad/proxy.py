@@ -1191,6 +1191,64 @@ checkStatus();
 </script></body></html>"""
 
 
+async def handle_metrics(request: Request):
+    """Prometheus metrics endpoint — plain text format, no dependencies."""
+    proxy = _get_proxy()
+    stats = proxy.stats
+
+    acceptance_rate = stats.acceptance_rate
+    tokens_per_round = stats.effective_tokens_per_round
+    uptime = stats.uptime_seconds
+
+    lines = [
+        "# HELP tightwad_requests_total Total number of speculation rounds",
+        "# TYPE tightwad_requests_total counter",
+        f"tightwad_requests_total {stats.total_rounds}",
+        "",
+        "# HELP tightwad_tokens_generated_total Total tokens output",
+        "# TYPE tightwad_tokens_generated_total counter",
+        f"tightwad_tokens_generated_total {stats.total_tokens_output}",
+        "",
+        "# HELP tightwad_tokens_drafted_total Total tokens drafted",
+        "# TYPE tightwad_tokens_drafted_total counter",
+        f"tightwad_tokens_drafted_total {stats.total_drafted}",
+        "",
+        "# HELP tightwad_tokens_accepted_total Total tokens accepted",
+        "# TYPE tightwad_tokens_accepted_total counter",
+        f"tightwad_tokens_accepted_total {stats.total_accepted}",
+        "",
+        "# HELP tightwad_speculation_acceptance_rate Current acceptance rate",
+        "# TYPE tightwad_speculation_acceptance_rate gauge",
+        f"tightwad_speculation_acceptance_rate {acceptance_rate:.6f}",
+        "",
+        "# HELP tightwad_speculation_rounds_total Total speculation rounds",
+        "# TYPE tightwad_speculation_rounds_total counter",
+        f"tightwad_speculation_rounds_total {stats.total_rounds}",
+        "",
+        "# HELP tightwad_tokens_per_round Average tokens accepted per round",
+        "# TYPE tightwad_tokens_per_round gauge",
+        f"tightwad_tokens_per_round {tokens_per_round:.2f}",
+        "",
+        "# HELP tightwad_uptime_seconds Proxy uptime in seconds",
+        "# TYPE tightwad_uptime_seconds gauge",
+        f"tightwad_uptime_seconds {uptime:.1f}",
+        "",
+        "# HELP tightwad_bonus_tokens_total Bonus tokens from full acceptance",
+        "# TYPE tightwad_bonus_tokens_total counter",
+        f"tightwad_bonus_tokens_total {stats.total_bonus}",
+        "",
+        "# HELP tightwad_resampled_total Rounds with rejection + resample",
+        "# TYPE tightwad_resampled_total counter",
+        f"tightwad_resampled_total {stats.total_resampled}",
+        "",
+    ]
+
+    return Response(
+        content="\n".join(lines) + "\n",
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
 async def handle_chat_ui(request: Request):
     return HTMLResponse(CHAT_HTML)
 
@@ -1247,6 +1305,7 @@ def create_app(config: ProxyConfig) -> Starlette:
             Route("/v1/tightwad/status", handle_status, methods=["GET"]),
             Route("/v1/tightwad/events", handle_events, methods=["GET"]),
             Route("/v1/tightwad/history", handle_history, methods=["GET"]),
+            Route("/metrics", handle_metrics, methods=["GET"]),
         ],
         middleware=[
             # TokenAuthMiddleware is a no-op when auth_token is None,

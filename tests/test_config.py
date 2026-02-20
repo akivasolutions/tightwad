@@ -1,12 +1,14 @@
 """Tests for cluster config loading."""
 
+import os
 import textwrap
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
 
-from tightwad.config import ClusterConfig, ModelConfig, ProxyConfig, backend_presets, load_config
+from tightwad.config import ClusterConfig, ModelConfig, ProxyConfig, backend_presets, load_config, _resolve_config_path
 from tightwad.coordinator import build_server_args
 
 
@@ -154,24 +156,45 @@ def _minimal_config(**overrides) -> ClusterConfig:
 
 # -- flash_attn in build_server_args --
 
-def test_flash_attn_true_produces_on():
+def test_flash_attn_true_bare_flag():
+    """flash_attn=True emits --flash-attn as a bare flag (no trailing value)."""
     model = ModelConfig(name="m", path="/m.gguf", flash_attn=True)
     args = build_server_args(_minimal_config(), model)
     idx = args.index("--flash-attn")
-    assert args[idx + 1] == "on"
-
-
-def test_flash_attn_string_auto():
-    model = ModelConfig(name="m", path="/m.gguf", flash_attn="auto")
-    args = build_server_args(_minimal_config(), model)
-    idx = args.index("--flash-attn")
-    assert args[idx + 1] == "auto"
+    # Next arg must start with '-' or be the last arg (bare flag, no value)
+    assert idx == len(args) - 1 or args[idx + 1].startswith("-")
 
 
 def test_flash_attn_false_omitted():
     model = ModelConfig(name="m", path="/m.gguf", flash_attn=False)
     args = build_server_args(_minimal_config(), model)
     assert "--flash-attn" not in args
+
+
+def test_flash_attn_legacy_string_coerced(tmp_path):
+    """Legacy YAML with flash_attn: 'on' or 'auto' is coerced to True."""
+    cfg = {
+        "coordinator": {"host": "0.0.0.0", "port": 8080, "backend": "cuda", "gpus": []},
+        "models": {"m": {"path": "/m.gguf", "default": True, "flash_attn": "on"}},
+    }
+    p = tmp_path / "cluster.yaml"
+    p.write_text(yaml.dump(cfg))
+    config = load_config(p)
+    model = config.default_model()
+    assert model.flash_attn is True
+
+
+def test_flash_attn_legacy_off_string_coerced(tmp_path):
+    """Legacy YAML with flash_attn: 'off' is coerced to False."""
+    cfg = {
+        "coordinator": {"host": "0.0.0.0", "port": 8080, "backend": "cuda", "gpus": []},
+        "models": {"m": {"path": "/m.gguf", "default": True, "flash_attn": "off"}},
+    }
+    p = tmp_path / "cluster.yaml"
+    p.write_text(yaml.dump(cfg))
+    config = load_config(p)
+    model = config.default_model()
+    assert model.flash_attn is False
 
 
 # -- extra_args passthrough --
@@ -280,3 +303,54 @@ def test_backend_presets_auto_injected(tmp_path):
     config = load_config(p)
     assert config.env["HSA_ENABLE_SDMA"] == "0"
     assert config.env["GPU_MAX_HW_QUEUES"] == "1"
+
+
+# -- Config auto-discovery --
+
+def test_config_autodiscovery_cwd(tmp_path, monkeypatch):
+    """Auto-discovers tightwad.yaml in current working directory."""
+    cfg = {
+        "coordinator": {"host": "0.0.0.0", "port": 8080, "backend": "cuda", "gpus": []},
+        "models": {"m": {"path": "/m.gguf", "default": True}},
+    }
+    (tmp_path / "tightwad.yaml").write_text(yaml.dump(cfg))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TIGHTWAD_CONFIG", raising=False)
+
+    config = load_config(None)
+    assert config.coordinator_port == 8080
+
+
+def test_config_autodiscovery_home(tmp_path, monkeypatch):
+    """Auto-discovers ~/.tightwad/config.yaml."""
+    cfg = {
+        "coordinator": {"host": "0.0.0.0", "port": 9090, "backend": "cuda", "gpus": []},
+        "models": {"m": {"path": "/m.gguf", "default": True}},
+    }
+    tightwad_dir = tmp_path / ".tightwad"
+    tightwad_dir.mkdir()
+    (tightwad_dir / "config.yaml").write_text(yaml.dump(cfg))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.delenv("TIGHTWAD_CONFIG", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    config = load_config(None)
+    assert config.coordinator_port == 9090
+
+
+def test_config_autodiscovery_raises_with_searched_paths(tmp_path, monkeypatch):
+    """FileNotFoundError lists searched paths when no config found."""
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    monkeypatch.chdir(empty_dir)
+    monkeypatch.delenv("TIGHTWAD_CONFIG", raising=False)
+    monkeypatch.delenv("TIGHTWAD_DRAFT_URL", raising=False)
+    monkeypatch.delenv("TIGHTWAD_TARGET_URL", raising=False)
+    # Ensure DEFAULT_CONFIG doesn't exist by pointing home() somewhere empty
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Also patch DEFAULT_CONFIG to a non-existent path
+    monkeypatch.setattr("tightwad.config.DEFAULT_CONFIG", tmp_path / "nonexistent" / "cluster.yaml")
+    with pytest.raises(FileNotFoundError, match="tightwad init"):
+        load_config(None)

@@ -278,6 +278,61 @@ def generate_cluster_yaml(
     return yaml.dump(config, default_flow_style=False, sort_keys=False)
 
 
+def generate_local_yaml(
+    gpus: list,
+    binary: str | None,
+    model_path: str | None = None,
+    port: int = 8080,
+) -> str:
+    """Generate a coordinator-only config YAML from detected GPUs.
+
+    Parameters
+    ----------
+    gpus:
+        List of DetectedGPU objects from gpu_detect.detect_gpus().
+    binary:
+        Path to llama-server binary, or None to use default.
+    model_path:
+        Optional path to a GGUF model file.
+    port:
+        Coordinator port (default 8080).
+    """
+    # Determine backend from the first GPU
+    backend = gpus[0].backend if gpus else "cuda"
+
+    coordinator_gpus = []
+    for gpu in gpus:
+        coordinator_gpus.append({
+            "name": gpu.name,
+            "vram_gb": max(1, gpu.vram_mb // 1024),
+        })
+
+    models = {}
+    if model_path:
+        models["default"] = {
+            "path": model_path,
+            "ctx_size": 8192,
+            "predict": 4096,
+            "flash_attn": True,
+            "default": True,
+        }
+
+    config = {
+        "coordinator": {
+            "host": "0.0.0.0",
+            "port": port,
+            "backend": backend,
+            "gpus": coordinator_gpus,
+        },
+        "models": models,
+    }
+
+    if binary:
+        config["binaries"] = {"coordinator": binary}
+
+    return yaml.dump(config, default_flow_style=False, sort_keys=False)
+
+
 def run_wizard(console: Console, result: ScanResult, output: Path, proxy_port: int = 8088) -> bool:
     """Run the interactive wizard. Returns True if config was written."""
     display_servers(console, result)

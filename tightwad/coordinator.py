@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -20,6 +21,44 @@ LOGDIR = Path.home() / ".tightwad" / "logs"
 COORDINATOR_LOG = LOGDIR / "coordinator.log"
 
 
+def _write_pidfile(pid: int, port: int, config_path: str | None = None,
+                   model_name: str | None = None) -> None:
+    """Write JSON metadata to the pidfile."""
+    PIDFILE.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "pid": pid,
+        "port": port,
+        "config": config_path,
+        "model": model_name,
+        "started": time.time(),
+    }
+    PIDFILE.write_text(json.dumps(data))
+
+
+def _read_pidfile() -> dict | None:
+    """Read pidfile, handling both JSON (new) and plain-int (legacy) formats.
+
+    Returns dict with at least {"pid": int} or None if no pidfile.
+    """
+    if not PIDFILE.exists():
+        return None
+    text = PIDFILE.read_text().strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict) and "pid" in data:
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Legacy: plain integer PID
+    try:
+        pid = int(text)
+        return {"pid": pid}
+    except ValueError:
+        return None
+
+
 def build_server_args(config: ClusterConfig, model: ModelConfig) -> list[str]:
     """Build llama-server command-line arguments."""
     args = [
@@ -33,8 +72,7 @@ def build_server_args(config: ClusterConfig, model: ModelConfig) -> list[str]:
     ]
 
     if model.flash_attn:
-        val = model.flash_attn if isinstance(model.flash_attn, str) else "on"
-        args.extend(["--flash-attn", val])
+        args.append("--flash-attn")
 
     # RPC workers
     rpc_addrs = config.rpc_addresses
@@ -71,8 +109,9 @@ def start(config: ClusterConfig, model_name: str | None = None) -> int:
             raise ValueError("No models configured")
 
     # Check if already running
-    if PIDFILE.exists():
-        pid = int(PIDFILE.read_text().strip())
+    pidfile_data = _read_pidfile()
+    if pidfile_data is not None:
+        pid = pidfile_data["pid"]
         try:
             os.kill(pid, 0)
             raise RuntimeError(
@@ -116,17 +155,22 @@ def start(config: ClusterConfig, model_name: str | None = None) -> int:
         # Always release the parent-side reference, even if Popen fails.
         log_fh.close()
 
-    PIDFILE.write_text(str(proc.pid))
+    _write_pidfile(
+        pid=proc.pid,
+        port=config.coordinator_port,
+        model_name=model.name,
+    )
 
     return proc.pid
 
 
 def stop() -> bool:
     """Stop the coordinator llama-server."""
-    if not PIDFILE.exists():
+    pidfile_data = _read_pidfile()
+    if pidfile_data is None:
         return False
 
-    pid = int(PIDFILE.read_text().strip())
+    pid = pidfile_data["pid"]
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -135,34 +179,41 @@ def stop() -> bool:
     return True
 
 
-def status(config: ClusterConfig) -> dict:
-    """Get full cluster status."""
+def status(config: ClusterConfig | None = None) -> dict:
+    """Get full cluster status.
+
+    If *config* is None, attempts to read port from pidfile metadata
+    for config-less status checks.
+    """
     # Coordinator
     coord_running = False
     coord_pid = None
-    if PIDFILE.exists():
-        coord_pid = int(PIDFILE.read_text().strip())
+    pidfile_data = _read_pidfile()
+    if pidfile_data is not None:
+        coord_pid = pidfile_data["pid"]
         try:
             os.kill(coord_pid, 0)
             coord_running = True
         except ProcessLookupError:
             PIDFILE.unlink(missing_ok=True)
             coord_pid = None
+            pidfile_data = None
+
+    # Determine port: config takes precedence, then pidfile metadata
+    port = config.coordinator_port if config else pidfile_data.get("port", 8080) if pidfile_data else 8080
 
     coord_health = None
     if coord_running:
-        coord_health = check_coordinator_health(
-            "127.0.0.1", config.coordinator_port
-        )
+        coord_health = check_coordinator_health("127.0.0.1", port)
 
-    # Workers
-    worker_statuses = check_all_workers(config)
+    # Workers (requires config)
+    worker_statuses = check_all_workers(config) if config else []
 
-    return {
+    result = {
         "coordinator": {
             "running": coord_running,
             "pid": coord_pid,
-            "port": config.coordinator_port,
+            "port": port,
             "health": coord_health,
         },
         "workers": [
@@ -174,13 +225,23 @@ def status(config: ClusterConfig) -> dict:
             }
             for s in worker_statuses
         ],
-        "config": {
+    }
+
+    # Config summary (only when config is available)
+    if config:
+        result["config"] = {
             "total_vram_gb": config.total_vram_gb,
             "gpu_count": len(config.all_gpus),
             "models": list(config.models.keys()),
             "tensor_split": config.tensor_split(),
-        },
-    }
+        }
+    elif pidfile_data:
+        result["config"] = {
+            "model": pidfile_data.get("model"),
+            "started": pidfile_data.get("started"),
+        }
+
+    return result
 
 
 def start_and_reclaim(

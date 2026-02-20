@@ -156,13 +156,13 @@ coordinator:
 
 **Backend presets:** Tightwad auto-injects `HSA_ENABLE_SDMA=0` and `GPU_MAX_HW_QUEUES=1` for `hip` backends with 2+ GPUs. This prevents SDMA hangs on most AMD boards without any manual config. Explicit `env` values in YAML override presets.
 
-**`flash_attn`** accepts `true`/`false` or string values `"on"`/`"off"`/`"auto"`:
+**`flash_attn`** is a boolean (`true`/`false`). Legacy string values (`"on"`, `"off"`, `"auto"`) are accepted in YAML and coerced to boolean during config loading:
 
 ```yaml
 models:
   qwen3-32b:
     path: /models/Qwen3-32B-Q4_K_M.gguf
-    flash_attn: "auto"                 # let llama-server decide
+    flash_attn: true                   # emitted as bare --flash-attn flag
     default: true
 ```
 

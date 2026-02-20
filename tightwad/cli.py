@@ -42,7 +42,11 @@ def cli(ctx, config):
 
 
 def _load(ctx) -> "ClusterConfig":
-    return load_config(ctx.obj.get("config_path"))
+    try:
+        return load_config(ctx.obj.get("config_path"))
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
 
 
 @cli.command()
@@ -57,13 +61,58 @@ def _load(ctx) -> "ClusterConfig":
 @click.option("--target-backend", default=None, help="Target backend: ollama or llamacpp (auto-detected from port)")
 @click.option("--max-draft-tokens", default=32, type=int, help="Max tokens per draft round (default: 32)")
 @click.option("-y", "--yes", is_flag=True, help="Overwrite existing config without prompting")
+@click.option("--local", is_flag=True, help="Auto-detect local GPUs and generate coordinator-only config")
+@click.option("--model-path", default=None, type=click.Path(), help="Path to GGUF model file (used with --local)")
+@click.option("--port", "local_port", default=8080, type=int, help="Coordinator port (used with --local, default: 8080)")
 def init(subnet, extra_ports, output, draft_url, draft_model, draft_backend,
-         target_url, target_model, target_backend, max_draft_tokens, yes):
+         target_url, target_model, target_backend, max_draft_tokens, yes,
+         local, model_path, local_port):
     """Auto-discover LAN inference servers and generate cluster.yaml."""
     import asyncio
     from urllib.parse import urlparse
 
     output_path = Path(output)
+
+    # Local mode: auto-detect GPUs
+    if local:
+        from .gpu_detect import detect_gpus, detect_binary
+
+        console.print("[bold]Detecting GPUs...[/bold]")
+        gpus = detect_gpus()
+        if not gpus:
+            console.print("[red]No GPUs detected.[/red]")
+            console.print("Ensure nvidia-smi, rocm-smi, or system_profiler is available.")
+            sys.exit(1)
+
+        for gpu in gpus:
+            vram_gb = gpu.vram_mb / 1024
+            console.print(f"  [green]●[/green] {gpu.name} ({vram_gb:.0f} GB, {gpu.backend})")
+
+        binary = detect_binary()
+        if binary:
+            console.print(f"\n  Binary: {binary}")
+        else:
+            console.print("\n  [yellow]llama-server not found in PATH[/yellow]")
+            console.print("  Install llama.cpp: https://github.com/ggml-org/llama.cpp")
+
+        yaml_str = init_wizard.generate_local_yaml(
+            gpus=gpus, binary=binary, model_path=model_path, port=local_port,
+        )
+
+        if output_path.exists() and not yes:
+            overwrite = input(f"{output_path} already exists. Overwrite? [y/N] ").strip().lower()
+            if overwrite != "y":
+                console.print("[dim]Cancelled.[/dim]")
+                return
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(yaml_str)
+        console.print(f"\n[green]✓[/green] Config written to {output_path}")
+        if not model_path:
+            console.print("\n[dim]Tip: add a model with --model-path or edit the config directly.[/dim]")
+        console.print(f"\n[bold]Next steps:[/bold]")
+        console.print(f"  tightwad -c {output_path} start")
+        return
 
     # Non-interactive mode: --draft-url + --target-url
     if draft_url and target_url:
@@ -175,7 +224,9 @@ def start(ctx, model, ram_reclaim):
             console.print(f"\n[green bold]Coordinator started (PID {pid})[/green bold]")
             console.print(f"  API: http://localhost:{config.coordinator_port}/v1")
             if result:
-                if result.method == "skipped":
+                if result.method == "failed":
+                    console.print(f"  RAM reclaim: [yellow]failed[/yellow] ({result.error})")
+                elif result.method == "skipped":
                     console.print(f"  RAM reclaim: skipped ({result.error or 'not needed'})")
                 else:
                     console.print(
@@ -241,7 +292,14 @@ def logs(service, follow, clear, lines):
 @click.pass_context
 def status(ctx):
     """Show cluster status."""
-    config = _load(ctx)
+    # Try loading config, fall back to config-less mode
+    config = None
+    try:
+        config = _load(ctx)
+    except SystemExit:
+        # _load calls sys.exit on FileNotFoundError — catch it for config-less mode
+        pass
+
     st = coordinator.status(config)
 
     # Coordinator
@@ -259,22 +317,30 @@ def status(ctx):
         console.print("[dim]○ Coordinator not running[/dim]")
 
     # Workers
-    console.print()
-    table = Table(title="RPC Workers")
-    table.add_column("Address")
-    table.add_column("Status")
-    table.add_column("Latency")
-    for w in st["workers"]:
-        status_str = "[green]alive[/green]" if w["alive"] else f"[red]down[/red]"
-        latency_str = f"{w['latency_ms']}ms" if w["latency_ms"] else "-"
-        table.add_row(w["address"], status_str, latency_str)
-    console.print(table)
+    if st["workers"]:
+        console.print()
+        table = Table(title="RPC Workers")
+        table.add_column("Address")
+        table.add_column("Status")
+        table.add_column("Latency")
+        for w in st["workers"]:
+            status_str = "[green]alive[/green]" if w["alive"] else f"[red]down[/red]"
+            latency_str = f"{w['latency_ms']}ms" if w["latency_ms"] else "-"
+            table.add_row(w["address"], status_str, latency_str)
+        console.print(table)
 
     # Config summary
-    cfg = st["config"]
-    console.print(f"\nTotal VRAM: [bold]{cfg['total_vram_gb']} GB[/bold] across {cfg['gpu_count']} GPUs")
-    console.print(f"Tensor split: {cfg['tensor_split']}")
-    console.print(f"Models: {', '.join(cfg['models'])}")
+    cfg = st.get("config", {})
+    if "total_vram_gb" in cfg:
+        console.print(f"\nTotal VRAM: [bold]{cfg['total_vram_gb']} GB[/bold] across {cfg['gpu_count']} GPUs")
+        console.print(f"Tensor split: {cfg['tensor_split']}")
+        console.print(f"Models: {', '.join(cfg['models'])}")
+    elif "model" in cfg:
+        console.print(f"\n  Model: {cfg['model'] or 'unknown'}")
+        if cfg.get("started"):
+            import datetime
+            started = datetime.datetime.fromtimestamp(cfg["started"])
+            console.print(f"  Started: {started.strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 @cli.command()
@@ -384,11 +450,13 @@ def reclaim(target_pid, model_path):
 
     pid = target_pid
     if pid is None:
-        if not PIDFILE.exists():
+        from .coordinator import _read_pidfile
+        pidfile_data = _read_pidfile()
+        if pidfile_data is None:
             console.print("[red]No coordinator running and no --pid specified.[/red]")
             console.print("Start the coordinator first, or provide --pid.")
             sys.exit(1)
-        pid = int(PIDFILE.read_text().strip())
+        pid = pidfile_data["pid"]
         # Verify it's alive
         try:
             os.kill(pid, 0)
@@ -401,9 +469,11 @@ def reclaim(target_pid, model_path):
     console.print(f"[bold]Reclaiming RAM from PID {pid}...[/bold]")
     result = reclaim_ram(pid, model_path)
 
-    if result.method == "skipped":
+    if result.method == "failed":
+        console.print(f"  RAM reclaim: [yellow]failed[/yellow] ({result.error})")
+    elif result.method == "skipped":
         msg = result.error or "not applicable on this platform"
-        console.print(f"  RAM reclaim: [yellow]skipped[/yellow] ({msg})")
+        console.print(f"  RAM reclaim: [dim]skipped[/dim] ({msg})")
     else:
         console.print(f"  RSS before: {result.rss_before_mb:,.1f} MB")
         console.print(f"  RSS after:  {result.rss_after_mb:,.1f} MB")
@@ -749,6 +819,174 @@ def proxy_status(ctx):
         console.print(table)
     else:
         console.print("\n[dim]No speculation rounds yet.[/dim]")
+
+
+# --- Service subcommand group ---
+
+
+@cli.group("service")
+def service_group():
+    """Manage tightwad as a system service (systemd/launchd)."""
+    pass
+
+
+@service_group.command("install")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True),
+              help="Path to tightwad config YAML")
+@click.option("--user/--system", default=True, help="Install as user service (default) or system service")
+def service_install(config_path, user):
+    """Install tightwad as a system service."""
+    from .service import install_service
+
+    try:
+        plat, path = install_service(config_path, user=user)
+        console.print(f"[green]✓[/green] Installed {plat} service: {path}")
+        if plat == "systemd":
+            console.print(f"\n  Start:  systemctl {'--user ' if user else ''}start tightwad")
+            console.print(f"  Status: systemctl {'--user ' if user else ''}status tightwad")
+        elif plat == "launchd":
+            console.print(f"\n  The service will start automatically on login.")
+            console.print(f"  Status: launchctl list com.tightwad.server")
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+
+@service_group.command("uninstall")
+def service_uninstall():
+    """Uninstall the tightwad system service."""
+    from .service import uninstall_service
+
+    try:
+        plat, was_installed = uninstall_service()
+        if was_installed:
+            console.print(f"[green]✓[/green] Uninstalled {plat} service")
+        else:
+            console.print(f"[yellow]No {plat} service found to uninstall[/yellow]")
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+
+@service_group.command("status")
+def service_status_cmd():
+    """Check if tightwad service is installed and running."""
+    from .service import service_status
+
+    st = service_status()
+    if st["installed"]:
+        running_str = "[green]running[/green]" if st["running"] else "[yellow]stopped[/yellow]"
+        console.print(f"  Service: {running_str} ({st['platform']})")
+        console.print(f"  Path:    {st['path']}")
+    else:
+        console.print(f"  [dim]Not installed ({st['platform']})[/dim]")
+        console.print(f"  Install with: tightwad service install --config /path/to/config.yaml")
+
+
+@cli.command("deploy")
+@click.argument("host")
+@click.option("--ssh-user", default="", help="SSH username (default: current user)")
+@click.option("--config", "deploy_config", default=None, type=click.Path(exists=True),
+              help="Config file to deploy (copied to remote)")
+def deploy_cmd(host, ssh_user, deploy_config):
+    """Deploy tightwad to a remote host via SSH.
+
+    Installs tightwad, copies config, starts the coordinator, and verifies health.
+    """
+    from .deploy import deploy
+
+    console.print(f"[bold]Deploying to {host}...[/bold]")
+
+    result = deploy(host, ssh_user=ssh_user, config_path=deploy_config)
+
+    for step in result.steps_completed:
+        console.print(f"  [green]✓[/green] {step}")
+
+    if result.success:
+        console.print(f"\n[green bold]Deployment complete![/green bold]")
+        console.print(f"  API: http://{host}:8080/v1")
+    else:
+        console.print(f"\n[red]{result.message}[/red]")
+        sys.exit(1)
+
+
+@cli.command("pull")
+@click.argument("model_spec", default="")
+@click.option("--dir", "model_dir", default=None, type=click.Path(),
+              help="Download directory (default: ~/.tightwad/models/)")
+@click.option("--list", "list_models", is_flag=True, help="List available models")
+def pull(model_spec, model_dir, list_models):
+    """Download a GGUF model from HuggingFace.
+
+    MODEL_SPEC can be a registry name (e.g. llama3.3:70b-q4_k_m), a direct URL,
+    or a HuggingFace repo path (e.g. org/repo/file.gguf).
+    """
+    from .model_hub import (
+        resolve_model,
+        download_model,
+        validate_download,
+        list_models as hub_list_models,
+    )
+
+    if list_models:
+        from rich.table import Table
+        table = Table(title="Available Models")
+        table.add_column("Spec", style="bold")
+        table.add_column("Repository")
+        table.add_column("Filename")
+        for spec, repo, filename in hub_list_models():
+            table.add_row(spec, repo, filename)
+        console.print(table)
+        return
+
+    if not model_spec:
+        console.print("[red]Provide a model spec or use --list to see available models.[/red]")
+        console.print("  tightwad pull llama3.3:70b-q4_k_m")
+        console.print("  tightwad pull --list")
+        sys.exit(1)
+
+    try:
+        resolved = resolve_model(model_spec)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    dest_dir = Path(model_dir) if model_dir else None
+    console.print(f"[bold]Downloading {resolved.filename}...[/bold]")
+    console.print(f"  URL: {resolved.hf_url}")
+
+    from rich.progress import Progress, BarColumn, TextColumn, SpinnerColumn, DownloadColumn
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        DownloadColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Downloading...", total=None)
+
+        def on_progress(downloaded, total):
+            if total and total > 0:
+                progress.update(task, total=total, completed=downloaded)
+
+        try:
+            path = download_model(
+                resolved.hf_url,
+                dest_dir=dest_dir,
+                filename=resolved.filename,
+                progress_callback=on_progress,
+            )
+        except Exception as e:
+            console.print(f"\n[red]Download failed: {e}[/red]")
+            sys.exit(1)
+
+    # Validate
+    if validate_download(path):
+        size_gb = path.stat().st_size / (1024 ** 3)
+        console.print(f"\n[green]✓[/green] Downloaded: {path} ({size_gb:.1f} GB)")
+    else:
+        console.print(f"\n[yellow]Warning: {path} does not appear to be a valid GGUF file[/yellow]")
 
 
 @cli.command("inspect")

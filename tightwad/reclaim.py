@@ -257,12 +257,25 @@ def detect_model_path_from_proc(pid: int) -> str | None:
     return None
 
 
-def _reclaim_linux(pid: int, model_path: str | None) -> str:
-    """Linux: use posix_fadvise(DONTNEED) on the GGUF file."""
+_FADVISE_ERRORS: dict[int, str] = {
+    9: "Bad file descriptor (EBADF)",
+    22: "Invalid argument (EINVAL) — file may not support fadvise",
+    29: "Illegal seek (ESPIPE) — not a regular file",
+}
+
+
+def _reclaim_linux(pid: int, model_path: str | None) -> tuple[str, str | None]:
+    """Linux: use posix_fadvise(DONTNEED) on the GGUF file.
+
+    Returns (method, error_message | None) where method is one of:
+    - "posix_fadvise" — success
+    - "failed" — fadvise returned a non-zero errno
+    - "skipped" — could not attempt (no model path)
+    """
     if model_path is None:
         model_path = detect_model_path_from_proc(pid)
     if model_path is None:
-        return "skipped"
+        return "skipped", "no model path detected"
 
     POSIX_FADV_DONTNEED = 4
     try:
@@ -272,14 +285,15 @@ def _reclaim_linux(pid: int, model_path: str | None) -> str:
             file_size = os.fstat(fd).st_size
             ret = libc.posix_fadvise(fd, 0, file_size, POSIX_FADV_DONTNEED)
             if ret != 0:
-                logger.warning("posix_fadvise returned %d", ret)
-                return "skipped"
+                human_msg = _FADVISE_ERRORS.get(ret, f"unknown error (errno {ret})")
+                logger.debug("posix_fadvise returned %d: %s", ret, human_msg)
+                return "failed", human_msg
         finally:
             os.close(fd)
-        return "posix_fadvise"
+        return "posix_fadvise", None
     except Exception as e:
-        logger.warning("posix_fadvise failed: %s", e)
-        return "skipped"
+        logger.debug("posix_fadvise exception: %s", e)
+        return "failed", str(e)
 
 
 def _reclaim_windows(pid: int) -> str:
@@ -343,7 +357,7 @@ def reclaim_ram(pid: int, model_path: str | None = None) -> ReclaimResult:
 
     error = None
     if _SYSTEM == "linux":
-        method = _reclaim_linux(pid, model_path)
+        method, error = _reclaim_linux(pid, model_path)
     elif _SYSTEM == "windows":
         method = _reclaim_windows(pid)
     else:

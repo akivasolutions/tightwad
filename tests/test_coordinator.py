@@ -1,10 +1,12 @@
 """Tests for coordinator command building."""
 
+import json
+
 import pytest
 import yaml
 
 from tightwad.config import load_config
-from tightwad.coordinator import build_server_args
+from tightwad.coordinator import build_server_args, _read_pidfile, _write_pidfile, PIDFILE
 
 
 @pytest.fixture
@@ -66,6 +68,17 @@ def test_build_args_rpc(config):
     assert "192.168.1.100:50053" in rpc_val
 
 
+def test_build_args_flash_attn_bare_flag(config):
+    """--flash-attn must be a bare flag with no trailing value argument."""
+    model = config.default_model()
+    args = build_server_args(config, model)
+    idx = args.index("--flash-attn")
+    # Next arg must start with '-' or --flash-attn is the last arg
+    assert idx == len(args) - 1 or args[idx + 1].startswith("-"), (
+        f"--flash-attn is not bare: next arg is {args[idx + 1]!r}"
+    )
+
+
 def test_build_args_tensor_split(config):
     model = config.default_model()
     args = build_server_args(config, model)
@@ -74,3 +87,39 @@ def test_build_args_tensor_split(config):
     split_val = args[args.index("--tensor-split") + 1]
     parts = split_val.split(",")
     assert len(parts) == 4
+
+
+# -- Pidfile JSON format --
+
+def test_pidfile_json_roundtrip(tmp_path, monkeypatch):
+    """JSON pidfile writes and reads back correctly."""
+    pidfile = tmp_path / "coordinator.pid"
+    monkeypatch.setattr("tightwad.coordinator.PIDFILE", pidfile)
+
+    _write_pidfile(pid=12345, port=8080, model_name="test-model")
+    data = _read_pidfile()
+
+    assert data is not None
+    assert data["pid"] == 12345
+    assert data["port"] == 8080
+    assert data["model"] == "test-model"
+    assert "started" in data
+
+
+def test_pidfile_legacy_int(tmp_path, monkeypatch):
+    """Legacy plain-int pidfile is read correctly."""
+    pidfile = tmp_path / "coordinator.pid"
+    pidfile.write_text("54321")
+    monkeypatch.setattr("tightwad.coordinator.PIDFILE", pidfile)
+
+    data = _read_pidfile()
+    assert data is not None
+    assert data["pid"] == 54321
+    assert "port" not in data  # legacy format has no port
+
+
+def test_pidfile_missing(tmp_path, monkeypatch):
+    """Missing pidfile returns None."""
+    pidfile = tmp_path / "nonexistent.pid"
+    monkeypatch.setattr("tightwad.coordinator.PIDFILE", pidfile)
+    assert _read_pidfile() is None
